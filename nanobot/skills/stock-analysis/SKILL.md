@@ -26,6 +26,8 @@ metadata: '{"nanobot":{"emoji":"📈","requires":{"bins":["python"],"env":["STOC
 
 - `STOCK_API_BASE`：可选环境变量，指定股票接口网关基址，默认为\
   `http://uat-nbai-gw.caizidao.com.cn/business/security/api`。
+- `STOCK_SKILL_CACHE_DIR`：可选环境变量，指定本 skill 在本地落盘缓存 JSON 结果的根目录；\
+  若不配置，则默认使用 skill 目录下的 `.cache` 子目录。
 - 所有日期统一使用 `YYYY-MM-DD` 字符串格式（例如 `2025-06-25`）。
 - 股票 `fullCode` 统一使用形如 `SH600000`、`SZ000001`、`OC874239` 的证券代码。
 
@@ -50,6 +52,8 @@ python nanobot/skills/stock-analysis/scripts/cli.py basic \
 
 # 查询当日全量基础信息（慎用，数据量较大）
 python nanobot/skills/stock-analysis/scripts/cli.py basic
+
+# 大数据量场景下，CLI 会自动将完整结果写入缓存文件，仅在 stdout 返回轻量摘要（包含 filePath 与 cacheRef），无需手动指定输出文件。
 ```
 
 #### 返回示例（缩略）
@@ -86,6 +90,8 @@ python nanobot/skills/stock-analysis/scripts/cli.py daily \
   --full-code SH600036 \
   --start-date 2025-06-01 \
   --count 60
+
+# 当 count 很大时，同样会自动将完整结果写入缓存文件，stdout 只返回轻量摘要。
 ```
 
 #### 返回示例（缩略）
@@ -130,6 +136,15 @@ python nanobot/skills/stock-analysis/scripts/cli.py indicators \
   --full-code SH600036 \
   --date 2025-06-25 \
   --lookback 120
+
+# 当已通过 daily 子命令获取并落盘了日K数据时，可以复用文件，避免重复 HTTP 请求：
+python nanobot/skills/stock-analysis/scripts/cli.py indicators \
+  --full-code SH600036 \
+  --date 2025-06-25 \
+  --lookback 120 \
+  --daily-file "D:/git/nanobot/.data/stock/SH600036_daily_2025-06-01_500.json"
+
+# 指标计算结果也会自动写入缓存文件，stdout 仅返回带有 filePath 与 cacheRef 的摘要。
 ```
 
 > `lookback` 为向前取日 K 的数量，用于计算长周期指标，一般建议不少于 60。
@@ -194,6 +209,15 @@ python nanobot/skills/stock-analysis/scripts/cli.py signals \
   --full-code SH600036 \
   --date 2025-06-25 \
   --lookback 160
+
+# 复用已有 daily 结果文件：
+python nanobot/skills/stock-analysis/scripts/cli.py signals \
+  --full-code SH600036 \
+  --date 2025-06-25 \
+  --lookback 160 \
+  --daily-file "D:/git/nanobot/.data/stock/SH600036_daily_2025-06-01_500.json"
+
+# 信号识别结果同样会自动写入缓存文件，stdout 仅返回带有 filePath 与 cacheRef 的摘要。
 ```
 
 #### 返回示例（缩略）
@@ -257,7 +281,9 @@ CLI 在遇到错误或数据不足时，会返回：
 
 ## 使用建议
 
-- 在一次会话中，如果用户持续分析同一支股票，可以复用最近一次 `indicators` 或 `signals` 的结果，避免重复调用；
+- 在一次会话中，如果用户持续分析同一支股票，可以复用最近一次 `indicators` 或 `signals` 的结果，避免重复调用；\
+  在大数据量场景（如长周期 `daily`、全市场 `basic`）下，本 CLI 会自动将完整 JSON 结果写入本地缓存文件（`STOCK_SKILL_CACHE_DIR` 或默认 `.cache` 目录），\
+  stdout 仅返回带有 `filePath` / `cacheRef` 的轻量摘要，你应该通过文件系统工具按需读取关键字段，而不是在对话中传递整份 JSON；
 - 当用户只问**定性问题**（例如“这只股票最近是不是很强势？”），可以适当缩短 `lookback`；\
   当用户问**趋势结构**（例如“过去几个月是否有明显头部/底部结构？”），应适当拉长 `lookback`；
 - 避免向用户输出原始 JSON；\
