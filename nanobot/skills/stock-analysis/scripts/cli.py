@@ -94,35 +94,16 @@ def _bars_from_json(items: List[Dict[str, Any]]) -> List[DailyBar]:
     return bars
 
 
-def _resolve_output_path(path_str: str) -> Path:
-    path = Path(path_str).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _maybe_cache_and_print(
     kind: str,
     key_parts: Dict[str, Any],
     payload: Dict[str, Any],
     summary: Dict[str, Any],
-    output_file: str | None,
 ) -> None:
     """
     统一处理输出逻辑：
-    - 若指定 output_file，则写入该文件，只打印 summary（附 filePath）；
     - 否则将结果写入缓存目录（若未配置环境变量则使用默认 .cache 目录），在 summary 中补充 cacheRef 与 filePath。
     """
-    if output_file:
-        path = _resolve_output_path(output_file)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
-        summary = dict(summary)
-        summary["filePath"] = str(path)
-        _print_json(summary)
-        return
-
     # 自动缓存：默认使用 storage.get_base_dir() 返回的目录
     ref_id, cache_path = save_json(kind, key_parts, payload)
     summary = dict(summary)
@@ -155,7 +136,7 @@ def cmd_basic(args: argparse.Namespace) -> None:
             "startDate": args.start_date or "",
             "endDate": args.end_date or "",
         }
-        _maybe_cache_and_print("basic", key_parts, payload, summary, getattr(args, "output_file", None))
+        _maybe_cache_and_print("basic", key_parts, payload, summary)
     except StockApiError as exc:
         _print_error("HTTP_ERROR", str(exc))
 
@@ -187,7 +168,7 @@ def cmd_daily(args: argparse.Namespace) -> None:
             "endDate": args.end_date or "",
             "count": args.count,
         }
-        _maybe_cache_and_print("daily", key_parts, payload, summary, getattr(args, "output_file", None))
+        _maybe_cache_and_print("daily", key_parts, payload, summary)
     except (StockApiError, ValueError) as exc:
         _print_error("HTTP_ERROR", str(exc))
 
@@ -247,7 +228,7 @@ def cmd_indicators(args: argparse.Namespace) -> None:
             "lookback": args.lookback,
             "endDate": args.end_date or "",
         }
-        _maybe_cache_and_print("indicators", key_parts, payload, summary, getattr(args, "output_file", None))
+        _maybe_cache_and_print("indicators", key_parts, payload, summary)
     except ValueError as exc:
         _print_error("NO_DATA", str(exc))
     except StockApiError as exc:
@@ -307,7 +288,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
             "lookback": args.lookback,
             "endDate": args.end_date or "",
         }
-        _maybe_cache_and_print("signals", key_parts, payload, summary, getattr(args, "output_file", None))
+        _maybe_cache_and_print("signals", key_parts, payload, summary)
     except ValueError as exc:
         _print_error("NO_DATA", str(exc))
     except StockApiError as exc:
@@ -323,13 +304,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_basic.add_argument("--full-code", dest="full_code", type=str, default=None, help="证券 fullCode，如 SH600000")
     p_basic.add_argument("--start-date", type=str, default=None, help="起始日期 (YYYY-MM-DD)")
     p_basic.add_argument("--end-date", type=str, default=None, help="结束日期 (YYYY-MM-DD)")
-    p_basic.add_argument(
-        "--output-file",
-        dest="output_file",
-        type=str,
-        default=None,
-        help="将完整结果写入指定 JSON 文件，仅在 stdout 输出轻量摘要",
-    )
     p_basic.set_defaults(func=cmd_basic)
 
     # daily
@@ -338,13 +312,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_daily.add_argument("--start-date", type=str, required=True, help="起始日期 (YYYY-MM-DD)")
     p_daily.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
     p_daily.add_argument("--count", type=int, required=True, help="向前获取的K线条数，包含 startDate 当日")
-    p_daily.add_argument(
-        "--output-file",
-        dest="output_file",
-        type=str,
-        default=None,
-        help="将完整结果写入指定 JSON 文件，仅在 stdout 输出轻量摘要",
-    )
     p_daily.set_defaults(func=cmd_daily)
 
     # indicators
@@ -366,13 +333,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="从本地 daily JSON 文件加载日K数据，替代 HTTP 请求",
     )
-    p_ind.add_argument(
-        "--output-file",
-        dest="output_file",
-        type=str,
-        default=None,
-        help="将完整结果写入指定 JSON 文件，仅在 stdout 输出轻量摘要",
-    )
     p_ind.set_defaults(func=cmd_indicators)
 
     # signals
@@ -393,13 +353,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="从本地 daily JSON 文件加载日K数据，替代 HTTP 请求",
-    )
-    p_sig.add_argument(
-        "--output-file",
-        dest="output_file",
-        type=str,
-        default=None,
-        help="将完整结果写入指定 JSON 文件，仅在 stdout 输出轻量摘要",
     )
     p_sig.set_defaults(func=cmd_signals)
 
