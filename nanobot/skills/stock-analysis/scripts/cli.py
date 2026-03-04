@@ -102,9 +102,10 @@ def cmd_daily(args: argparse.Namespace) -> None:
 
 def cmd_indicators(args: argparse.Namespace) -> None:
     try:
+        # 使用目标日期作为 start_date，API 会向前获取 lookback 条数据
         bars = get_stock_daily_fq(
             full_code=args.full_code,
-            start_date=args.start_date,
+            start_date=args.date.isoformat(),
             count=args.lookback,
             end_date=args.end_date,
         )
@@ -132,9 +133,10 @@ def cmd_indicators(args: argparse.Namespace) -> None:
 
 def cmd_signals(args: argparse.Namespace) -> None:
     try:
+        # 使用目标日期作为 start_date，API 会向前获取 lookback 条数据
         bars = get_stock_daily_fq(
             full_code=args.full_code,
-            start_date=args.start_date,
+            start_date=args.date.isoformat(),
             count=args.lookback,
             end_date=args.end_date,
         )

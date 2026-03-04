@@ -3,7 +3,15 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..http_client import DailyBar
+import sys
+from pathlib import Path
+
+# 添加 stock-analysis 目录到路径以支持导入
+SKILL_ROOT = Path(__file__).resolve().parent.parent
+if str(SKILL_ROOT) not in sys.path:
+    sys.path.insert(0, str(SKILL_ROOT))
+
+from http_client import DailyBar
 
 
 Number = float
