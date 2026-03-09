@@ -43,6 +43,7 @@ dependencies = [
     "mcp>=1.26.0,<2.0.0",
     "json-repair>=0.57.0,<1.0.0",
     "openai>=2.8.0",
+    "jpype1>=1.5.2,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +78,7 @@ include = [
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "nanobot/skills/**/assets/**/*",
 ]
 
 [tool.hatch.build.targets.sdist]

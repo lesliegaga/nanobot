@@ -22,6 +22,13 @@ from http_client import (  # type: ignore[import]
     get_stock_daily_fq,
     get_stock_snapshot,
 )
+from indicators.libformula import (  # type: ignore[import]
+    AssetNotFoundError,
+    FormulaExecutionError,
+    IndicatorResultError,
+    JVMStartupError,
+    compute_advanced_indicators,
+)
 from indicators.ta import compute_all_indicators  # type: ignore[import]
 from indicators import signals as signal_mod  # type: ignore[import]
 from storage import save_json  # type: ignore[import]
@@ -33,6 +40,35 @@ def _print_json(payload: Dict[str, Any]) -> None:
 
 def _print_error(code: str, message: str) -> None:
     _print_json({"ok": False, "error": {"code": code, "message": message}})
+
+
+def _print_libformula_error(exc: Exception) -> None:
+    if isinstance(exc, AssetNotFoundError):
+        _print_error("LIBFORMULA_ASSET_MISSING", str(exc))
+        return
+    if isinstance(exc, JVMStartupError):
+        _print_error("LIBFORMULA_JVM_ERROR", str(exc))
+        return
+    if isinstance(exc, IndicatorResultError):
+        _print_error("LIBFORMULA_NO_RESULT", str(exc))
+        return
+    if isinstance(exc, FormulaExecutionError):
+        _print_error("LIBFORMULA_RUN_ERROR", str(exc))
+        return
+    _print_error("LIBFORMULA_ERROR", str(exc))
+
+
+def _market_index_full_code(full_code: str) -> str | None:
+    text = (full_code or "").upper()
+    if text.startswith("SH"):
+        return "SH000001"
+    if text.startswith("SZ"):
+        return "SZ399001"
+    if text.startswith("BJ"):
+        return "BJ000002"
+    if text.startswith("GZ"):
+        return "GZ899001"
+    return None
 
 
 def _parse_date(value: str) -> date:
@@ -205,7 +241,23 @@ def cmd_indicators(args: argparse.Namespace) -> None:
             return
 
         target = args.date
+        market_index_bars: List[DailyBar] | None = None
+        index_full_code = _market_index_full_code(args.full_code)
+        if index_full_code:
+            market_index_bars = get_stock_daily_fq(
+                full_code=index_full_code,
+                start_date=args.date.isoformat(),
+                count=args.lookback,
+                end_date=args.end_date,
+            )
         result = compute_all_indicators(bars, target)
+        advanced_indicators = compute_advanced_indicators(
+            bars,
+            target,
+            stock_code=args.full_code,
+            market_index_bars=market_index_bars,
+        )
+        result["indicators"].update(advanced_indicators)
         payload = {
             "ok": True,
             "type": "indicators",
@@ -233,6 +285,8 @@ def cmd_indicators(args: argparse.Namespace) -> None:
         _print_error("NO_DATA", str(exc))
     except StockApiError as exc:
         _print_error("HTTP_ERROR", str(exc))
+    except (AssetNotFoundError, JVMStartupError, IndicatorResultError, FormulaExecutionError) as exc:
+        _print_libformula_error(exc)
 
 
 def cmd_signals(args: argparse.Namespace) -> None:
