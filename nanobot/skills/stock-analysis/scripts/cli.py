@@ -21,6 +21,7 @@ from http_client import (  # type: ignore[import]
     get_stock_basic,
     get_stock_daily_fq,
     get_stock_snapshot,
+    get_latest_trade_date,
 )
 from indicators.libformula import (  # type: ignore[import]
     AssetNotFoundError,
@@ -75,7 +76,7 @@ def _parse_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"无效日期格式: {value}，应为 YYYY-MM-DD") from exc
+        raise argparse.ArgumentTypeError(f"无效日期格式：{value}，应为 YYYY-MM-DD") from exc
 
 
 def _bars_to_json(bars: List[DailyBar]) -> List[Dict[str, Any]]:
@@ -216,16 +217,16 @@ def cmd_indicators(args: argparse.Namespace) -> None:
         if getattr(args, "daily_file", None):
             daily_path = Path(args.daily_file).expanduser()
             if not daily_path.is_file():
-                _print_error("NO_DATA", f"daily 文件不存在: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件不存在：{daily_path}")
                 return
             with daily_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict) or data.get("type") != "daily":
-                _print_error("NO_DATA", f"daily 文件格式不正确: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件格式不正确：{daily_path}")
                 return
             items = data.get("bars") or []
             if not isinstance(items, list):
-                _print_error("NO_DATA", f"daily 文件中 bars 字段格式不正确: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件中 bars 字段格式不正确：{daily_path}")
                 return
             bars = _bars_from_json(items)
         else:
@@ -237,7 +238,7 @@ def cmd_indicators(args: argparse.Namespace) -> None:
                 end_date=args.end_date,
             )
         if not bars:
-            _print_error("NO_DATA", "未获取到任何日K数据")
+            _print_error("NO_DATA", "未获取到任何日 K 数据")
             return
 
         target = args.date
@@ -296,16 +297,16 @@ def cmd_signals(args: argparse.Namespace) -> None:
         if getattr(args, "daily_file", None):
             daily_path = Path(args.daily_file).expanduser()
             if not daily_path.is_file():
-                _print_error("NO_DATA", f"daily 文件不存在: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件不存在：{daily_path}")
                 return
             with daily_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict) or data.get("type") != "daily":
-                _print_error("NO_DATA", f"daily 文件格式不正确: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件格式不正确：{daily_path}")
                 return
             items = data.get("bars") or []
             if not isinstance(items, list):
-                _print_error("NO_DATA", f"daily 文件中 bars 字段格式不正确: {daily_path}")
+                _print_error("NO_DATA", f"daily 文件中 bars 字段格式不正确：{daily_path}")
                 return
             bars = _bars_from_json(items)
         else:
@@ -317,7 +318,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
                 end_date=args.end_date,
             )
         if not bars:
-            _print_error("NO_DATA", "未获取到任何日K数据")
+            _print_error("NO_DATA", "未获取到任何日 K 数据")
             return
 
         target = args.date
@@ -349,6 +350,51 @@ def cmd_signals(args: argparse.Namespace) -> None:
         _print_error("HTTP_ERROR", str(exc))
 
 
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    """查询股票最新实时快照数据"""
+    try:
+        items = get_stock_snapshot(full_code=args.full_code)
+        if not items:
+            _print_error("NO_DATA", "未获取到快照数据")
+            return
+        payload = {
+            "ok": True,
+            "type": "snapshot",
+            "fullCode": args.full_code,
+            "items": items,
+        }
+        summary = {
+            "ok": True,
+            "type": "snapshot",
+            "fullCode": args.full_code,
+            "itemCount": len(items),
+        }
+        key_parts: Dict[str, Any] = {
+            "fullCode": args.full_code,
+        }
+        _maybe_cache_and_print("snapshot", key_parts, payload, summary)
+    except (StockApiError, ValueError) as exc:
+        _print_error("HTTP_ERROR", str(exc))
+
+
+def cmd_latest_date(args: argparse.Namespace) -> None:
+    """获取股票最新交易日期"""
+    try:
+        latest_date = get_latest_trade_date(args.full_code)
+        if not latest_date:
+            _print_error("NO_DATA", "未获取到最新交易日期")
+            return
+        payload = {
+            "ok": True,
+            "type": "latest-date",
+            "fullCode": args.full_code,
+            "tradeDate": latest_date.isoformat(),
+        }
+        _print_json(payload)
+    except (StockApiError, ValueError) as exc:
+        _print_error("HTTP_ERROR", str(exc))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stock analysis skill CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -361,31 +407,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_basic.set_defaults(func=cmd_basic)
 
     # daily
-    p_daily = subparsers.add_parser("daily", help="查询单只股票前复权日K数据")
+    p_daily = subparsers.add_parser("daily", help="查询单只股票前复权日 K 数据")
     p_daily.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
     p_daily.add_argument("--start-date", type=str, required=True, help="起始日期 (YYYY-MM-DD)")
     p_daily.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
-    p_daily.add_argument("--count", type=int, required=True, help="向前获取的K线条数，包含 startDate 当日")
+    p_daily.add_argument("--count", type=int, required=True, help="向前获取的 K 线条数，包含 startDate 当日")
     p_daily.set_defaults(func=cmd_daily)
 
     # indicators
     p_ind = subparsers.add_parser("indicators", help="计算指定日期的技术指标")
     p_ind.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
     p_ind.add_argument("--date", type=_parse_date, required=True, help="目标交易日 (YYYY-MM-DD)")
-    p_ind.add_argument("--start-date", type=str, required=True, help="日K 查询起始日期 (YYYY-MM-DD)")
+    p_ind.add_argument("--start-date", type=str, required=True, help="日 K 查询起始日期 (YYYY-MM-DD)")
     p_ind.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
     p_ind.add_argument(
         "--lookback",
         type=int,
         default=120,
-        help="向前获取的日K条数，用于计算长周期指标，默认 120",
+        help="向前获取的日 K 条数，用于计算长周期指标，默认 120",
     )
     p_ind.add_argument(
         "--daily-file",
         dest="daily_file",
         type=str,
         default=None,
-        help="从本地 daily JSON 文件加载日K数据，替代 HTTP 请求",
+        help="从本地 daily JSON 文件加载日 K 数据，替代 HTTP 请求",
     )
     p_ind.set_defaults(func=cmd_indicators)
 
@@ -393,22 +439,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_sig = subparsers.add_parser("signals", help="识别指定日期的高级技术信号")
     p_sig.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
     p_sig.add_argument("--date", type=_parse_date, required=True, help="目标交易日 (YYYY-MM-DD)")
-    p_sig.add_argument("--start-date", type=str, required=True, help="日K 查询起始日期 (YYYY-MM-DD)")
+    p_sig.add_argument("--start-date", type=str, required=True, help="日 K 查询起始日期 (YYYY-MM-DD)")
     p_sig.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
     p_sig.add_argument(
         "--lookback",
         type=int,
         default=160,
-        help="向前获取的日K条数，用于识别形态，默认 160",
+        help="向前获取的日 K 条数，用于识别形态，默认 160",
     )
     p_sig.add_argument(
         "--daily-file",
         dest="daily_file",
         type=str,
         default=None,
-        help="从本地 daily JSON 文件加载日K数据，替代 HTTP 请求",
+        help="从本地 daily JSON 文件加载日 K 数据，替代 HTTP 请求",
     )
     p_sig.set_defaults(func=cmd_signals)
+
+    # snapshot
+    p_snapshot = subparsers.add_parser("snapshot", help="查询股票最新实时快照")
+    p_snapshot.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
+    p_snapshot.set_defaults(func=cmd_snapshot)
+
+    # latest-date
+    p_latest = subparsers.add_parser("latest-date", help="获取股票最新交易日期")
+    p_latest.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
+    p_latest.set_defaults(func=cmd_latest_date)
 
     return parser
 
@@ -425,4 +481,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

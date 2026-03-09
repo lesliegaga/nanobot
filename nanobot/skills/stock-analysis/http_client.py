@@ -101,6 +101,27 @@ def get_stock_snapshot(full_code: str) -> List[Dict[str, Any]]:
     return _normalize_table(content)
 
 
+def get_latest_trade_date(full_code: str) -> date | None:
+    """
+    获取单只股票的最新交易日期。
+    通过 snapshot 接口获取，返回最新交易日 date 对象，若无数据返回 None。
+    """
+    try:
+        snapshot = get_stock_snapshot(full_code)
+        if not snapshot:
+            return None
+        # snapshot 中包含 trade_time 字段 (格式：2026-03-09 16:59:54)
+        row = snapshot[0]
+        trade_time_str = str(row.get("trade_time", ""))
+        if not trade_time_str:
+            return None
+        # 从 trade_time 中提取日期部分
+        trade_date_str = trade_time_str.split(" ")[0]
+        return date.fromisoformat(trade_date_str)
+    except Exception:
+        return None
+
+
 @dataclass
 class DailyBar:
     ts_code: str
