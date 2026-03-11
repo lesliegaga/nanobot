@@ -409,17 +409,17 @@ def build_parser() -> argparse.ArgumentParser:
     # daily
     p_daily = subparsers.add_parser("daily", help="查询单只股票前复权日 K 数据")
     p_daily.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
-    p_daily.add_argument("--start-date", type=str, required=True, help="起始日期 (YYYY-MM-DD)")
-    p_daily.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
-    p_daily.add_argument("--count", type=int, required=True, help="向前获取的 K 线条数，包含 startDate 当日")
+    p_daily.add_argument("--end-date", type=str, required=True, help="结束日期 (YYYY-MM-DD)")
+    p_daily.add_argument("--start-date", type=str, default=None, help="起始日期 (预留，可为空)")
+    p_daily.add_argument("--count", type=int, required=True, help="向前获取的 K 线条数，包含 endDate 当日")
     p_daily.set_defaults(func=cmd_daily)
 
     # indicators
     p_ind = subparsers.add_parser("indicators", help="计算指定日期的技术指标")
     p_ind.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
     p_ind.add_argument("--date", type=_parse_date, required=True, help="目标交易日 (YYYY-MM-DD)")
-    p_ind.add_argument("--start-date", type=str, required=True, help="日 K 查询起始日期 (YYYY-MM-DD)")
-    p_ind.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
+    p_ind.add_argument("--end-date", type=str, required=True, help="日 K 查询结束日期 (YYYY-MM-DD)")
+    p_ind.add_argument("--start-date", type=str, default=None, help="起始日期 (预留，可为空)")
     p_ind.add_argument(
         "--lookback",
         type=int,
@@ -439,8 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sig = subparsers.add_parser("signals", help="识别指定日期的高级技术信号")
     p_sig.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
     p_sig.add_argument("--date", type=_parse_date, required=True, help="目标交易日 (YYYY-MM-DD)")
-    p_sig.add_argument("--start-date", type=str, required=True, help="日 K 查询起始日期 (YYYY-MM-DD)")
-    p_sig.add_argument("--end-date", type=str, default=None, help="结束日期 (预留，可为空)")
+    p_sig.add_argument("--end-date", type=str, required=True, help="日 K 查询结束日期 (YYYY-MM-DD)")
+    p_sig.add_argument("--start-date", type=str, default=None, help="起始日期 (预留，可为空)")
     p_sig.add_argument(
         "--lookback",
         type=int,
