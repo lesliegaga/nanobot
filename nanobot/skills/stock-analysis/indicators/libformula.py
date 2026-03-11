@@ -154,7 +154,7 @@ def compute_advanced_indicators(
     if not bars:
         raise ValueError("bars 不能为空")
     runtime = _LibformulaRuntime.shared()
-    resolved_stock_code = stock_code or _infer_stock_code(bars[0].ts_code)
+    resolved_stock_code = _infer_stock_code(stock_code or bars[0].ts_code)
     indicators: dict[str, Any] = {}
     for indicator_name in ADVANCED_INDICATOR_NAMES:
         indicators[indicator_name] = runtime.run_indicator(
@@ -258,8 +258,6 @@ def _default_params_for_indicator(indicator_name: str) -> dict[str, str]:
         "XK": {
             "SYS_1": "12",
             "SYS_2": "47",
-            "Z_UPPER": "1.96",
-            "Z_LOWER": "1.96",
         },
         "DIR": {
             "SYS_1": "20",
