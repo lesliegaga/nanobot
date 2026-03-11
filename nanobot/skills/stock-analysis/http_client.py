@@ -139,9 +139,9 @@ class DailyBar:
 
 def get_stock_daily_fq(
     full_code: str,
-    start_date: str,
+    end_date: str,
     count: int,
-    end_date: Optional[str] = None,
+    start_date: Optional[str] = None,
 ) -> List[DailyBar]:
     """
     查询单只股票前复权日 K 线（类似 Tushare daily，单票）。
@@ -150,18 +150,19 @@ def get_stock_daily_fq(
     """
     if not full_code:
         raise ValueError("full_code 不能为空")
-    if not start_date:
-        raise ValueError("start_date 不能为空")
+    if not end_date:
+        raise ValueError("end_date 不能为空")
     if count <= 0:
         raise ValueError("count 必须为正整数")
 
+    # 接口约定：日 K 基于 endDate 向前取 count 天；仅传 endDate+count。
     payload: Dict[str, Any] = {
         "fullCode": full_code,
-        "startDate": start_date,
+        "endDate": end_date,
         "count": count,
     }
-    if end_date:
-        payload["endDate"] = end_date
+    if start_date:
+        payload["startDate"] = start_date
 
     data = _post_json("stock/daily/fq", payload)
     content = data.get("content") or {}

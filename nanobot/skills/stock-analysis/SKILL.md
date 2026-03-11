@@ -90,7 +90,7 @@ python nanobot/skills/stock-analysis/scripts/cli.py basic
 ```bash
 python nanobot/skills/stock-analysis/scripts/cli.py daily \
   --full-code SH600036 \
-  --start-date 2025-06-01 \
+  --end_date 2025-06-01 \
   --count 60
 
 # 当 count 很大时，同样会自动将完整结果写入缓存文件，stdout 只返回轻量摘要。
