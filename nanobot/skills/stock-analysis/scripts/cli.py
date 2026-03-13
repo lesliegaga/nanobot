@@ -59,6 +59,25 @@ def _print_libformula_error(exc: Exception) -> None:
     _print_error("LIBFORMULA_ERROR", str(exc))
 
 
+def _validate_full_code(full_code: str, allow_all: bool = False) -> None:
+    """
+    校验 full_code 为 SH/SZ/BJ/GZ 前缀格式（如 SH600000）。
+    CLI 仅支持该格式，不支持 600000.SH 等。
+    """
+    text = (full_code or "").strip().upper()
+    if not text:
+        raise ValueError("full_code 不能为空")
+    if allow_all and text == "ALL":
+        return
+    if text.startswith(("SH", "SZ", "BJ", "GZ")) and len(text) > 2 and text[2:].isdigit():
+        return
+    if "." in text or (len(text) > 2 and not text.startswith(("SH", "SZ", "BJ", "GZ"))):
+        raise ValueError(
+            f"full_code 须为 SH/SZ/BJ/GZ+数字格式（如 SH600000），当前不支持 600000.SH 等形式：{full_code!r}"
+        )
+    raise ValueError(f"full_code 格式无效，应为如 SH600000：{full_code!r}")
+
+
 def _market_index_full_code(full_code: str) -> str | None:
     text = (full_code or "").upper()
     if text.startswith("SH"):
@@ -151,6 +170,7 @@ def _maybe_cache_and_print(
 
 def cmd_basic(args: argparse.Namespace) -> None:
     try:
+        _validate_full_code(args.full_code, allow_all=True)
         items = get_stock_basic(
             full_code=args.full_code,
             start_date=args.start_date,
@@ -180,6 +200,7 @@ def cmd_basic(args: argparse.Namespace) -> None:
 
 def cmd_daily(args: argparse.Namespace) -> None:
     try:
+        _validate_full_code(args.full_code)
         bars = get_stock_daily_fq(
             full_code=args.full_code,
             start_date=args.start_date,
@@ -212,6 +233,7 @@ def cmd_daily(args: argparse.Namespace) -> None:
 
 def cmd_indicators(args: argparse.Namespace) -> None:
     try:
+        _validate_full_code(args.full_code)
         # 优先从本地 daily 结果文件加载日 K 数据，避免重复 HTTP 请求
         bars: List[DailyBar]
         if getattr(args, "daily_file", None):
@@ -242,6 +264,7 @@ def cmd_indicators(args: argparse.Namespace) -> None:
             return
 
         target = args.date
+        # 大盘指数 K 线：JC 等 SIMPLE_INDEX 指标必需，通过 get_stock_daily_fq 拉取
         market_index_bars: List[DailyBar] | None = None
         index_full_code = _market_index_full_code(args.full_code)
         if index_full_code:
@@ -292,6 +315,7 @@ def cmd_indicators(args: argparse.Namespace) -> None:
 
 def cmd_signals(args: argparse.Namespace) -> None:
     try:
+        _validate_full_code(args.full_code)
         # 优先从本地 daily 结果文件加载日 K 数据，避免重复 HTTP 请求
         bars: List[DailyBar]
         if getattr(args, "daily_file", None):
@@ -353,6 +377,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
 def cmd_snapshot(args: argparse.Namespace) -> None:
     """查询股票最新实时快照数据"""
     try:
+        _validate_full_code(args.full_code)
         items = get_stock_snapshot(full_code=args.full_code)
         if not items:
             _print_error("NO_DATA", "未获取到快照数据")
@@ -380,6 +405,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 def cmd_latest_date(args: argparse.Namespace) -> None:
     """获取股票最新交易日期"""
     try:
+        _validate_full_code(args.full_code)
         latest_date = get_latest_trade_date(args.full_code)
         if not latest_date:
             _print_error("NO_DATA", "未获取到最新交易日期")
@@ -416,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # indicators
     p_ind = subparsers.add_parser("indicators", help="计算指定日期的技术指标")
-    p_ind.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，如 SH600000")
+    p_ind.add_argument("--full-code", dest="full_code", type=str, required=True, help="证券 fullCode，仅支持 SH/SZ/BJ/GZ+数字，如 SH600000（不支持 600000.SH）")
     p_ind.add_argument("--date", type=_parse_date, required=True, help="目标交易日 (YYYY-MM-DD)")
     p_ind.add_argument("--end-date", type=str, required=True, help="日 K 查询结束日期 (YYYY-MM-DD)")
     p_ind.add_argument("--start-date", type=str, default=None, help="起始日期 (预留，可为空)")

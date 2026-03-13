@@ -21,7 +21,6 @@ if str(SKILL_ROOT) not in sys.path:
 from http_client import DailyBar
 from storage import get_base_dir
 
-
 INDICATOR_NAME_ALIASES = {
     "DIRECT": "DIR",
 }
@@ -172,14 +171,15 @@ class _LibformulaRuntime:
         param_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         try:
-            raw_result = self.facade.calculate(
-                _normalize_indicator_name(indicator_name),
-                stock_code,
-                self._to_java_ohlcv_list(bars),
-                None if index_bars is None else self._to_java_ohlcv_list(index_bars),
-                self._to_java_map(param_overrides or {}),
-                "",
-            )
+            with _temporary_cwd(self.runtime_dir):
+                raw_result = self.facade.calculate(
+                    _normalize_indicator_name(indicator_name),
+                    stock_code,
+                    self._to_java_ohlcv_list(bars),
+                    None if index_bars is None else self._to_java_ohlcv_list(index_bars),
+                    self._to_java_map(param_overrides or {}),
+                    "",
+                )
         except Exception as exc:
             raise FormulaExecutionError(f"{indicator_name} 计算失败: {exc}") from exc
 
@@ -543,26 +543,76 @@ def _convert_java_bean(value: Any) -> dict[str, Any]:
     return result
 
 
+# B 类指标（需重建 K 线/特殊结构），与 docs/INDICATOR_EXTRACTION_CS.md 一致
+B_CLASS_INDICATORS = frozenset(
+    {"K", "LK", "BAR", "PCK", "XK", "PD", "SAR", "DED", "CAN", "EQU", "VOL", "AMO", "KT1", "KT2"}
+)
+
+
+def _extract_xk_color(raw_result: Any, target_date: date) -> int | None:
+    """XK 指标：取 kline 系列在目标日或最后一根的 color，规范为 1~4。与 C# GetXKPlotElement 一致。"""
+    if not isinstance(raw_result, dict):
+        return None
+    series_list = raw_result.get("series") or []
+    kline_series = next((s for s in series_list if isinstance(s, dict) and s.get("type") == "kline"), None)
+    if not kline_series:
+        return None
+    points = kline_series.get("points") or []
+    point = None
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        pt_date = _coerce_to_date(p.get("time"))
+        if pt_date == target_date:
+            point = p
+            break
+    if point is None and points:
+        for p in reversed(points):
+            if isinstance(p, dict) and _coerce_to_date(p.get("time")) is not None:
+                point = p
+                break
+    if point is None:
+        return None
+    color = point.get("color")
+    if color is None:
+        return None
+    try:
+        v = int(round(float(color)))
+        return max(1, min(4, v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_indicator_value(indicator_name: str, raw_result: Any, target_date: date) -> Any:
     if isinstance(raw_result, dict) and raw_result.get("supported") is False:
         raise IndicatorResultError(
             f"{indicator_name} 当前在不可修改 JNI 约束下不支持: {raw_result.get('reason') or '未知原因'}"
         )
 
-    matched = _extract_from_series_payload(raw_result, target_date)
+    # XK：仅返回 COLOR 标量 1~4，与 C# 一致
+    if indicator_name == "XK":
+        color = _extract_xk_color(raw_result, target_date)
+        if color is not None:
+            return float(color)
+
+    matched = _extract_from_series_payload(indicator_name, raw_result, target_date)
     if matched is not None:
         return matched
 
     raise IndicatorResultError(f"{indicator_name} 在 {target_date.isoformat()} 未返回可用结果")
 
 
-def _extract_from_series_payload(raw_result: Any, target_date: date) -> Any:
+def _extract_from_series_payload(
+    indicator_name: str, raw_result: Any, target_date: date
+) -> Any:
     if not isinstance(raw_result, dict):
         return None
     series_list = raw_result.get("series")
     if not isinstance(series_list, list) or not series_list:
         return None
 
+    # 目标日无匹配时使用最后一根有效 bar（与 C# 文档「当前值」一致）
+    use_last = True
     values: dict[str, Any] = {}
     for item in series_list:
         if not isinstance(item, dict):
@@ -571,27 +621,45 @@ def _extract_from_series_payload(raw_result: Any, target_date: date) -> Any:
         points = item.get("points")
         if not isinstance(points, list):
             continue
-        matched = _match_series_point(points, target_date)
+        matched = _match_series_point(points, target_date, use_last_if_no_match=use_last)
         if matched is None:
             continue
         values[name] = matched
     if not values:
         return None
+    # 单曲线返回标量，多曲线返回 { name: value }
     if len(values) == 1:
         return next(iter(values.values()))
     return values
 
 
-def _match_series_point(points: list[Any], target_date: date) -> Any:
+def _match_series_point(
+    points: list[Any], target_date: date, use_last_if_no_match: bool = False
+) -> Any:
+    found = None
+    last_valid = None
     for point in points:
         if not isinstance(point, dict):
             continue
         point_date = _coerce_to_date(point.get("time"))
+        if point_date is not None:
+            last_valid = point
         if point_date != target_date:
             continue
-        payload = {key: value for key, value in point.items() if key != "time" and value is not None}
+        payload = {k: v for k, v in point.items() if k != "time" and v is not None}
         if not payload:
-            return point
+            found = point
+        elif list(payload.keys()) == ["value"]:
+            found = payload["value"]
+        else:
+            found = payload
+        break
+    if found is not None:
+        return found
+    if use_last_if_no_match and last_valid is not None:
+        payload = {k: v for k, v in last_valid.items() if k != "time" and v is not None}
+        if not payload:
+            return last_valid
         if list(payload.keys()) == ["value"]:
             return payload["value"]
         return payload
