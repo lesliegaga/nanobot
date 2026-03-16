@@ -23,3 +23,4 @@ botpy.log
 tests/
 .idea/
 .gitignore
+indicator_params.json

@@ -38,6 +38,44 @@ ALL_LIBFORMULA_INDICATOR_NAMES = (
 
 ADVANCED_INDICATOR_NAMES = ("XK", "DIR", "JC", "SAT", "PD", "SAR", "DED", "XVF")
 
+INDICATORS_DIR = Path(__file__).resolve().parent
+INDICATOR_PARAMS_CONFIG_PATH = INDICATORS_DIR / "indicator_params.json"
+
+
+def _load_indicator_params_config() -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, str],
+    dict[str, tuple[str, list[int]]],
+]:
+    """从 indicator_params.json 加载参数配置。"""
+    if not INDICATOR_PARAMS_CONFIG_PATH.is_file():
+        return {}, {}, {}
+    with open(INDICATOR_PARAMS_CONFIG_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    default_params = {
+        str(k).upper(): {str(pk): str(pv) for pk, pv in v.items()}
+        for k, v in (data.get("indicator_default_params") or {}).items()
+    }
+    formula_ma = {
+        str(k).upper(): str(v)
+        for k, v in (data.get("formula_ma_types") or {}).items()
+    }
+    ma_config_raw = data.get("indicator_ma_config") or {}
+    ma_config: dict[str, tuple[str, list[int]]] = {}
+    for k, v in ma_config_raw.items():
+        if isinstance(v, dict) and "ma_type" in v and "lines" in v:
+            lines = v["lines"]
+            if isinstance(lines, list):
+                ma_config[str(k).upper()] = (str(v["ma_type"]), [int(x) for x in lines])
+    return default_params, formula_ma, ma_config
+
+
+(
+    INDICATOR_DEFAULT_PARAMS,
+    FORMULA_MA_TYPES,
+    INDICATOR_MA_CONFIG,
+) = _load_indicator_params_config()
+
 ASSETS_DIR = SKILL_ROOT / "assets"
 JAR_PATH = ASSETS_DIR / "finance-indicator-openapi.jar"
 NATIVE_LIB_PATH = ASSETS_DIR / "libformula.so"
@@ -170,15 +208,18 @@ class _LibformulaRuntime:
         index_bars: list[DailyBar] | None = None,
         param_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        normalized_name = _normalize_indicator_name(indicator_name)
+        params = _merge_params(normalized_name, param_overrides)
+        extra_expression = _build_extra_expression(normalized_name)
         try:
             with _temporary_cwd(self.runtime_dir):
                 raw_result = self.facade.calculate(
-                    _normalize_indicator_name(indicator_name),
+                    normalized_name,
                     stock_code,
                     self._to_java_ohlcv_list(bars),
                     None if index_bars is None else self._to_java_ohlcv_list(index_bars),
-                    self._to_java_map(param_overrides or {}),
-                    "",
+                    self._to_java_map(params),
+                    extra_expression,
                 )
         except Exception as exc:
             raise FormulaExecutionError(f"{indicator_name} 计算失败: {exc}") from exc
@@ -455,6 +496,57 @@ def _ensure_quiet_logback_config() -> Path:
     return path
 
 
+def _formula_ma_type_to_lib_name(ma_type: str | None) -> str:
+    """与 C 库 calc_substr_fucnname 一致：EMA -> EXPMA，其余 -> MA"""
+    if not ma_type:
+        return "MA"
+    return "EXPMA" if ma_type.upper() == "EMA" else "MA"
+
+
+def _merge_params(indicator_name: str, param_overrides: dict[str, str] | None) -> dict[str, str]:
+    """
+    合并 Python 侧默认参数与调用方覆盖；注入 UPPER_MA/LOWER_MA/XMA 供 JNI 公式替换。
+    与 Java IndicatorFacade.mergeParams 语义一致，以 Python 配置为准。
+    """
+    base = dict(INDICATOR_DEFAULT_PARAMS.get(indicator_name.upper(), {}))
+    has_upper_lower = "Z_UPPER" in base or "Z_LOWER" in base
+    formula_ma = FORMULA_MA_TYPES.get(indicator_name.upper())
+
+    if has_upper_lower:
+        base.setdefault("UPPER_MA", "MA")
+        base.setdefault("LOWER_MA", "MA")
+    if formula_ma:
+        base.setdefault("XMA", _formula_ma_type_to_lib_name(formula_ma))
+
+    for k, v in (param_overrides or {}).items():
+        if k and v is not None:
+            base[k] = str(v)
+    return base
+
+
+def _make_ma_formula(ma_type: str, period: int) -> str:
+    """与 Java makeMAFormula 一致，生成单条均线公式"""
+    ma_type = ma_type.upper()
+    if ma_type == "EMA":
+        return f"EMA{period} : EXPMA(F_BASE, 2/({period} + 1));"
+    if ma_type == "PMA":
+        return "MTPMA : PMA(F_BASE);"
+    base = "F_BASE" if ma_type == "SMA" else ("H_BASE" if ma_type == "HMA" else "L_BASE" if ma_type == "LMA" else "")
+    if not base:
+        return ""
+    return f"{ma_type}{period} : MA({base}, {period});"
+
+
+def _build_extra_expression(indicator_name: str) -> str:
+    """根据 INDICATOR_MA_CONFIG 生成附加均线表达式，与 Java buildExtraExpression 一致"""
+    config = INDICATOR_MA_CONFIG.get(indicator_name.upper())
+    if not config:
+        return ""
+    ma_type, lines = config
+    parts = [_make_ma_formula(ma_type, p) for p in lines]
+    return " ".join(p for p in parts if p)
+
+
 def _normalize_indicator_name(indicator_name: str) -> str:
     normalized = str(indicator_name).strip().upper()
     if not normalized:
@@ -723,6 +815,9 @@ def _coerce_float(value: Any) -> float | None:
 __all__ = [
     "ADVANCED_INDICATOR_NAMES",
     "ALL_LIBFORMULA_INDICATOR_NAMES",
+    "INDICATOR_DEFAULT_PARAMS",
+    "FORMULA_MA_TYPES",
+    "INDICATOR_MA_CONFIG",
     "AssetNotFoundError",
     "FormulaExecutionError",
     "IndicatorResultError",
