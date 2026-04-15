@@ -543,14 +543,14 @@ class AgentLoop:
             if arg and not result.startswith("Error"):
                 self.wiki_path = target
                 wiki_tool._wiki_root = target
-                if self.config_path:
-                    from nanobot.config.loader import load_config, save_config
-                    try:
-                        cfg = load_config(Path(self.config_path))
-                        cfg.tools.wiki.path = str(target)
-                        save_config(cfg, Path(self.config_path))
-                    except Exception:
-                        pass  # Best-effort persistence
+                from nanobot.config.loader import get_config_path, load_config, save_config
+                config_path = Path(self.config_path) if self.config_path else get_config_path()
+                try:
+                    cfg = load_config(config_path)
+                    cfg.tools.wiki.path = str(target)
+                    save_config(cfg, config_path)
+                except Exception:
+                    pass  # Best-effort persistence
             return result
 
         if lower.startswith("/wiki-ingest"):
