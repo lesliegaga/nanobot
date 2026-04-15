@@ -310,6 +310,7 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
+    config_path_arg = config
     config = _load_runtime_config(config, workspace)
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
@@ -342,6 +343,7 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         wiki_path=config.tools.wiki.path or None,
+        config_path=config_path_arg,
     )
 
     # Set cron callback (needs agent)
@@ -494,6 +496,7 @@ def agent(
     from nanobot.config.paths import get_cron_dir
     from nanobot.cron.service import CronService
 
+    config_path_arg = config
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
 
@@ -527,6 +530,7 @@ def agent(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         wiki_path=config.tools.wiki.path or None,
+        config_path=config_path_arg,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -1023,6 +1027,7 @@ def wiki_init(
 ):
     """Initialize a new LLM Wiki."""
     from nanobot.agent.tools.wiki import WikiTool
+    from nanobot.config.loader import get_config_path, save_config
 
     cfg = _load_runtime_config(config, workspace)
     wiki_root = _resolve_wiki_root(cfg, wiki_path)
@@ -1033,8 +1038,12 @@ def wiki_init(
     marker = wiki_root / ".wiki"
     marker.write_text(f"# LLM Wiki root\n# Created: {datetime.now().isoformat()}\n", encoding="utf-8")
 
+    if wiki_path:
+        cfg.tools.wiki.path = str(wiki_root)
+        save_config(cfg, get_config_path())
+        console.print("\n[dim]Wiki path saved to config. Future commands will use this location automatically.[/dim]")
+
     console.print(result)
-    console.print("\n[dim]Wiki path saved. Future commands will use this location automatically.[/dim]")
 
 
 @wiki_app.command("ingest")

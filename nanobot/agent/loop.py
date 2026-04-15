@@ -68,6 +68,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         wiki_path: str | None = None,
+        config_path: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -107,6 +108,7 @@ class AgentLoop:
             Path(wiki_path).expanduser().resolve() if wiki_path
             else self.workspace / "wiki"
         )
+        self.config_path = config_path
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
@@ -537,6 +539,18 @@ class AgentLoop:
                     f"# LLM Wiki root\n# Created: {datetime.now().isoformat()}\n",
                     encoding="utf-8",
                 )
+            # Sync active wiki path so subsequent /wiki-* commands use the same location
+            if arg and not result.startswith("Error"):
+                self.wiki_path = target
+                wiki_tool._wiki_root = target
+                if self.config_path:
+                    from nanobot.config.loader import load_config, save_config
+                    try:
+                        cfg = load_config(Path(self.config_path))
+                        cfg.tools.wiki.path = str(target)
+                        save_config(cfg, Path(self.config_path))
+                    except Exception:
+                        pass  # Best-effort persistence
             return result
 
         if lower.startswith("/wiki-ingest"):

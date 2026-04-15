@@ -133,6 +133,10 @@ class WikiTool(Tool):
         wiki_pages_dir.mkdir(parents=True, exist_ok=True)
         assets_dir.mkdir(parents=True, exist_ok=True)
 
+        # Ensure page subdirectories exist for ingestion without prior init
+        for subdir in ("entities", "concepts", "sources", "syntheses"):
+            (wiki_pages_dir / subdir).mkdir(parents=True, exist_ok=True)
+
         return raw_dir, wiki_pages_dir, assets_dir
 
     def _get_index_path(self, wiki_root: Path) -> Path:
