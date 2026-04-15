@@ -320,11 +320,18 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # seconds before a tool call is cancelled
 
 
+class WikiConfig(Base):
+    """LLM Wiki knowledge base configuration."""
+
+    path: str = ""  # Wiki root directory. If empty, defaults to {workspace}/wiki
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    wiki: WikiConfig = Field(default_factory=WikiConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

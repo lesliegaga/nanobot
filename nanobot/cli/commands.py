@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Force UTF-8 encoding for Windows console
@@ -340,6 +341,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        wiki_path=config.tools.wiki.path or None,
     )
 
     # Set cron callback (needs agent)
@@ -524,6 +526,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        wiki_path=config.tools.wiki.path or None,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -969,6 +972,136 @@ def _login_github_copilot() -> None:
     except Exception as e:
         console.print(f"[red]Authentication error: {e}[/red]")
         raise typer.Exit(1)
+
+
+# ============================================================================
+# Wiki Commands
+# ============================================================================
+
+
+wiki_app = typer.Typer(help="Manage LLM Wiki knowledge base")
+app.add_typer(wiki_app, name="wiki")
+
+
+def _resolve_wiki_root(cfg: Config, wiki_path: str | None = None) -> Path:
+    """Resolve wiki root from explicit path, config, or default."""
+    if wiki_path:
+        return Path(wiki_path).expanduser().resolve()
+    if cfg.tools.wiki.path:
+        return Path(cfg.tools.wiki.path).expanduser().resolve()
+    return cfg.workspace_path / "wiki"
+
+
+def _create_wiki_tool_with_llm(config: Config, wiki_root: Path | None = None):
+    """Create a WikiTool with LLM provider. Raises if no API key is configured."""
+    from nanobot.agent.tools.wiki import WikiTool
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+
+    model = config.agents.defaults.model
+    provider_name = config.get_provider_name(model)
+    p = config.get_provider(model)
+
+    if not p or not p.api_key:
+        console.print("[red]Error: LLM Wiki requires a configured LLM provider with API key.[/red]")
+        raise typer.Exit(1)
+
+    provider = LiteLLMProvider(
+        api_key=p.api_key,
+        api_base=config.get_api_base(model),
+        default_model=model,
+        extra_headers=p.extra_headers if p else None,
+        provider_name=provider_name,
+    )
+    return WikiTool(wiki_root=wiki_root, provider=provider, model=model)
+
+
+@wiki_app.command("init")
+def wiki_init(
+    wiki_path: str = typer.Option(None, "--path", "-p", help="Wiki root directory"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str = typer.Option(None, "--config", "-c", help="Config file path"),
+):
+    """Initialize a new LLM Wiki."""
+    from nanobot.agent.tools.wiki import WikiTool
+
+    cfg = _load_runtime_config(config, workspace)
+    wiki_root = _resolve_wiki_root(cfg, wiki_path)
+
+    tool = WikiTool()
+    result = asyncio.run(tool._init_wiki(wiki_root))
+
+    marker = wiki_root / ".wiki"
+    marker.write_text(f"# LLM Wiki root\n# Created: {datetime.now().isoformat()}\n", encoding="utf-8")
+
+    console.print(result)
+    console.print("\n[dim]Wiki path saved. Future commands will use this location automatically.[/dim]")
+
+
+@wiki_app.command("ingest")
+def wiki_ingest(
+    source: str = typer.Argument(..., help="Source file or directory to ingest"),
+    wiki_path: str = typer.Option(None, "--path", "-p", help="Wiki root directory"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str = typer.Option(None, "--config", "-c", help="Config file path"),
+    no_summary: bool = typer.Option(False, "--no-summary", help="Skip creating summary page"),
+):
+    """Ingest a source into the wiki using LLM analysis."""
+    cfg = _load_runtime_config(config, workspace)
+    wiki_root = _resolve_wiki_root(cfg, wiki_path)
+    tool = _create_wiki_tool_with_llm(cfg, wiki_root)
+
+    result = asyncio.run(tool._ingest_source(wiki_root, source, create_summary=not no_summary))
+    console.print(result)
+
+
+@wiki_app.command("query")
+def wiki_query(
+    query: str = typer.Argument(..., help="Search query"),
+    wiki_path: str = typer.Option(None, "--path", "-p", help="Wiki root directory"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str = typer.Option(None, "--config", "-c", help="Config file path"),
+    category: str = typer.Option("all", "--category", help="Category filter"),
+):
+    """Query the wiki using LLM-powered semantic search and synthesis."""
+    cfg = _load_runtime_config(config, workspace)
+    wiki_root = _resolve_wiki_root(cfg, wiki_path)
+    tool = _create_wiki_tool_with_llm(cfg, wiki_root)
+
+    result = asyncio.run(tool._query_wiki(wiki_root, query, category))
+    console.print(Markdown(result))
+
+
+@wiki_app.command("lint")
+def wiki_lint(
+    wiki_path: str = typer.Option(None, "--path", "-p", help="Wiki root directory"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str = typer.Option(None, "--config", "-c", help="Config file path"),
+    check_type: str = typer.Option("all", "--check", "-k", help="Specific check type"),
+):
+    """Run LLM-powered health checks on the wiki."""
+    cfg = _load_runtime_config(config, workspace)
+    wiki_root = _resolve_wiki_root(cfg, wiki_path)
+    tool = _create_wiki_tool_with_llm(cfg, wiki_root)
+
+    result = asyncio.run(tool._lint_wiki(wiki_root, check_type))
+    console.print(Markdown(result))
+
+
+@wiki_app.command("sources")
+def wiki_sources(
+    wiki_path: str = typer.Option(None, "--path", "-p", help="Wiki root directory"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str = typer.Option(None, "--config", "-c", help="Config file path"),
+):
+    """List all sources in the wiki."""
+    from nanobot.agent.tools.wiki import WikiTool
+
+    cfg = _load_runtime_config(config, workspace)
+    wiki_root = _resolve_wiki_root(cfg, wiki_path)
+
+    tool = WikiTool()
+    result = asyncio.run(tool._list_sources(wiki_root))
+    console.print(Markdown(result))
 
 
 if __name__ == "__main__":

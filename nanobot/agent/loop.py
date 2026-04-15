@@ -7,6 +7,7 @@ import json
 import re
 import weakref
 from contextlib import AsyncExitStack
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -22,6 +23,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.tools.wiki import WikiTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -65,6 +67,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        wiki_path: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -100,6 +103,11 @@ class AgentLoop:
             restrict_to_workspace=restrict_to_workspace,
         )
 
+        self.wiki_path = (
+            Path(wiki_path).expanduser().resolve() if wiki_path
+            else self.workspace / "wiki"
+        )
+
         self._running = False
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
@@ -127,6 +135,11 @@ class AgentLoop:
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(WikiTool(
+            wiki_root=self.wiki_path,
+            provider=self.provider,
+            model=self.model,
+        ))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -391,7 +404,24 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content=(
+                                      "🐈 nanobot commands:\n"
+                                      "/new — Start a new conversation\n"
+                                      "/stop — Stop the current task\n"
+                                      "/wiki-init [path] — Initialize the wiki (optional custom path)\n"
+                                      "/wiki-ingest <path> — Ingest a source into the wiki\n"
+                                      "/wiki-query <question> — Query the wiki\n"
+                                      "/wiki-lint [check] — Run wiki health checks\n"
+                                      "/wiki-sources — List wiki sources\n"
+                                      "/help — Show available commands"
+                                  ))
+
+        # Wiki slash commands
+        wiki_result = await self._handle_wiki_command(msg.content.strip())
+        if wiki_result is not None:
+            return OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=wiki_result,
+            )
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
@@ -454,7 +484,6 @@ class AgentLoop:
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""
-        from datetime import datetime
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
@@ -486,6 +515,58 @@ class AgentLoop:
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
+
+    async def _handle_wiki_command(self, text: str) -> str | None:
+        """Handle /wiki-* slash commands. Returns response text or None if not a wiki command."""
+        lower = text.lower()
+        if not lower.startswith("/wiki-"):
+            return None
+
+        wiki_tool = self.tools.get("wiki")
+        if not isinstance(wiki_tool, WikiTool):
+            return "Error: Wiki tool is not registered."
+
+        if lower.startswith("/wiki-init"):
+            arg = text[len("/wiki-init"):].strip()
+            wiki_path = arg if arg else None
+            result = await wiki_tool.execute(operation="init", wiki_path=wiki_path)
+            target = Path(arg).expanduser().resolve() if arg else self.wiki_path
+            marker = target / ".wiki"
+            if not marker.exists():
+                marker.write_text(
+                    f"# LLM Wiki root\n# Created: {datetime.now().isoformat()}\n",
+                    encoding="utf-8",
+                )
+            return result
+
+        if lower.startswith("/wiki-ingest"):
+            arg = text[len("/wiki-ingest"):].strip()
+            if not arg:
+                return "Usage: /wiki-ingest <source_file_path>"
+            return await wiki_tool.execute(operation="ingest", source_path=arg)
+
+        if lower.startswith("/wiki-query"):
+            arg = text[len("/wiki-query"):].strip()
+            if not arg:
+                return "Usage: /wiki-query <question>"
+            return await wiki_tool.execute(operation="query", query=arg)
+
+        if lower.startswith("/wiki-lint"):
+            arg = text[len("/wiki-lint"):].strip().lower()
+            check_type = arg if arg in ("orphans", "contradictions", "stale", "missing_links", "quality") else "all"
+            return await wiki_tool.execute(operation="lint", check_type=check_type)
+
+        if lower == "/wiki-sources":
+            return await wiki_tool.execute(operation="list_sources")
+
+        return (
+            "Unknown wiki command. Available:\n"
+            "/wiki-init [path] — Initialize the wiki (optional custom path)\n"
+            "/wiki-ingest <path> — Ingest a source\n"
+            "/wiki-query <question> — Query the wiki\n"
+            "/wiki-lint [check] — Run health checks\n"
+            "/wiki-sources — List sources"
+        )
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
