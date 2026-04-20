@@ -6,6 +6,9 @@ This module implements the LLM Wiki pattern from docs/llm-wiki.md:
 - Two special files: index.md (content catalog) and log.md (chronological log)
 """
 
+import asyncio
+import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -14,8 +17,75 @@ from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.tools.base import Tool
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
+
+
+# JSON Schema for source analysis
+SOURCE_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "2-3 paragraph comprehensive summary of the key points"
+        },
+        "claims": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of key claims or findings from the source"
+        },
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"}
+                },
+                "required": ["name", "description"]
+            },
+            "description": "List of significant entities mentioned in the source"
+        },
+        "concepts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "definition": {"type": "string"}
+                },
+                "required": ["name", "definition"]
+            },
+            "description": "List of key concepts discussed in the source"
+        },
+        "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of relevant topic tags"
+        }
+    },
+    "required": ["summary", "claims", "entities", "concepts", "tags"]
+}
+
+# JSON Prompt template for source analysis
+SOURCE_ANALYSIS_JSON_PROMPT = """Analyze the source document and respond ONLY with valid JSON.
+
+Response format:
+{
+    "summary": "2-3 paragraph comprehensive summary of the key points",
+    "claims": ["claim 1", "claim 2", ...],
+    "entities": [
+        {"name": "Entity Name", "description": "Brief description of what/who this is"}
+    ],
+    "concepts": [
+        {"name": "Concept Name", "definition": "Brief definition or explanation"}
+    ],
+    "tags": ["tag1", "tag2", ...]
+}
+
+IMPORTANT: Respond ONLY with the JSON object, no other text."""
 
 
 class WikiTool(Tool):
@@ -26,6 +96,26 @@ class WikiTool(Tool):
     - Wiki pages are LLM-generated markdown files
     - Schema defines conventions and workflows
     """
+
+    # Configuration constants
+    MAX_CONTENT_LENGTH = 30000  # Source content truncation length
+    MAX_QUERY_PAGES = 15  # Max pages to include in query context
+    STALE_THRESHOLD_DAYS = 90  # Days before a page is considered stale
+    MAX_SOURCE_SIZE = 50 * 1024 * 1024  # 50MB file size limit
+    LLM_TIMEOUT_SECONDS = 120  # LLM call timeout
+    MAX_ANALYSIS_TOKENS = 4096  # Max tokens for LLM analysis
+
+    # Content truncation limits
+    QUERY_CONTENT_TRUNCATE = 3000  # Page content truncate for queries
+    INDEX_PREVIEW_LENGTH = 2000  # Index content preview on error
+    INDEX_CONTEXT_LENGTH = 2000  # Index context for LLM queries
+    RAW_CONTENT_DISPLAY_LIMIT = 50000  # Raw content display limit in pages
+    CONTRADICTION_ANALYSIS_LIMIT = 10  # Max pages for contradiction analysis
+    CONTRADICTION_SUMMARY_LENGTH = 1000  # Summary length for contradiction check
+    CONTRADICTION_MAX_TOKENS = 2048  # Max tokens for contradiction detection
+    QUALITY_ANALYSIS_LENGTH = 5000  # Content length for quality analysis
+    QUALITY_MAX_TOKENS = 1024  # Max tokens for quality analysis
+    QUERY_LOG_TRUNCATE_LENGTH = 80  # Query log entry truncate length
 
     def __init__(
         self,
@@ -191,6 +281,120 @@ class WikiTool(Tool):
         safe = re.sub(r'[^\w\s-]', '', name).strip()
         safe = re.sub(r'[-\s]+', '_', safe)
         return safe.lower()
+
+    def _validate_source_path(
+        self,
+        source_path: str,
+        wiki_root: Path,
+        allowed_paths: list[Path] | None = None
+    ) -> Path:
+        """Validate that source path is within allowed directories.
+
+        Args:
+            source_path: Path to the source file
+            wiki_root: Root directory of the wiki
+            allowed_paths: Additional allowed paths beyond wiki_root
+
+        Returns:
+            Resolved Path object
+
+        Raises:
+            ValueError: If path is outside allowed directories
+        """
+        source_file = Path(source_path).expanduser().resolve()
+
+        # Check if within wiki_root
+        if source_file.is_relative_to(wiki_root):
+            return source_file
+
+        # Check additional allowed paths
+        if allowed_paths:
+            for allowed in allowed_paths:
+                allowed_path = Path(allowed).expanduser().resolve()
+                if source_file.is_relative_to(allowed_path):
+                    return source_file
+
+        raise ValueError(f"Access denied: {source_path}")
+
+    def _validate_file_size(
+        self,
+        source_file: Path,
+        max_size_mb: int | None = None
+    ) -> None:
+        """Validate file size is within limit.
+
+        Args:
+            source_file: Path to the file to check
+            max_size_mb: Maximum allowed size in megabytes (defaults to 50MB)
+
+        Raises:
+            ValueError: If file exceeds size limit or file cannot be accessed
+        """
+        max_size_bytes = (max_size_mb or 50) * 1024 * 1024
+
+        if not source_file.exists():
+            raise ValueError(f"Cannot access file: {source_file}")
+
+        if source_file.stat().st_size > max_size_bytes:
+            raise ValueError(f"File too large: {source_file.name}")
+
+    def _extract_page_summary(self, frontmatter: dict[str, Any], body: str, max_length: int = 200) -> str:
+        """Extract a summary from page frontmatter or body.
+
+        Args:
+            frontmatter: Page frontmatter dictionary
+            body: Page body content
+            max_length: Maximum length of summary (default 200)
+
+        Returns:
+            Truncated summary string
+        """
+        # Try to get summary from frontmatter first
+        summary = frontmatter.get("summary", "").strip()
+
+        # If no summary in frontmatter, extract from body
+        if not summary and body:
+            # Remove markdown headers and get first paragraph
+            lines = body.split("\n")
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines and markdown headers
+                if line and not line.startswith("#") and not line.startswith("---"):
+                    summary = line
+                    break
+
+        # Truncate if needed
+        if len(summary) > max_length:
+            summary = summary[:max_length].rsplit(" ", 1)[0] + "..."
+
+        return summary if summary else "-"
+
+    def _count_entity_sources(self, wiki_root: Path, entity_name: str) -> int:
+        """Count how many sources mention a specific entity.
+
+        Args:
+            wiki_root: Root path of the wiki
+            entity_name: Name of the entity to search for
+
+        Returns:
+            Number of sources mentioning the entity
+        """
+        sources_dir = wiki_root / "pages" / "sources"
+        if not sources_dir.exists():
+            return 0
+
+        count = 0
+        entity_link = f"[[{entity_name}]]"
+
+        for source_file in sources_dir.glob("*.md"):
+            try:
+                content = source_file.read_text(encoding="utf-8")
+                if entity_link in content or entity_name in content:
+                    count += 1
+            except Exception:
+                continue
+
+        return count
 
     def _log_entry(self, wiki_root: Path, entry_type: str, description: str) -> None:
         """Prepend an entry to the chronological log (newest first)."""
@@ -365,106 +569,213 @@ Created wiki structure at {}
         """Call LLM to generate content.
 
         Raises RuntimeError if provider is not configured.
+        Returns error message if timeout occurs.
         """
         self._require_llm()
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        response = await self._provider.chat(
-            messages=messages,
-            model=self._model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+        try:
+            async with asyncio.timeout(self.LLM_TIMEOUT_SECONDS):
+                response = await self._provider.chat(
+                    messages=messages,
+                    model=self._model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            return response.content or ""
+        except asyncio.TimeoutError:
+            return f"Error: LLM call timed out after {self.LLM_TIMEOUT_SECONDS} seconds"
+
+    async def _call_llm_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        max_retries: int = 3,
+    ) -> dict[str, Any]:
+        """Call LLM and parse response as JSON with retry mechanism.
+
+        This method is designed for structured JSON output with automatic
+        retry on parse failures.
+
+        Args:
+            system_prompt: System prompt instructing LLM to return JSON.
+            user_prompt: User prompt with the actual request.
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens to generate.
+            max_retries: Maximum number of retry attempts on parse failure.
+
+        Returns:
+            Parsed JSON as dictionary.
+
+        Raises:
+            RuntimeError: If provider is not configured.
+            ValueError: If JSON parsing fails after all retries.
+        """
+        self._require_llm()
+
+        last_error: Exception | None = None
+        content = ""
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with asyncio.timeout(self.LLM_TIMEOUT_SECONDS):
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                    response = await self._provider.chat(
+                        messages=messages,
+                        model=self._model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+
+                content = response.content or ""
+
+                # Try to parse JSON
+                result = self._parse_json_response(content)
+                return result
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(
+                    f"JSON parse error on attempt {attempt}/{max_retries}: {e}. "
+                    f"Response preview: {content[:200]}..."
+                )
+                if attempt < max_retries:
+                    user_prompt = (
+                        f"{user_prompt}\n\n"
+                        "IMPORTANT: Your previous response was not valid JSON. "
+                        "Please respond ONLY with a valid JSON object, no markdown formatting, "
+                        "no explanations, just the JSON."
+                    )
+                continue
+
+            except Exception as e:
+                last_error = e
+                logger.error(f"Unexpected error on attempt {attempt}/{max_retries}: {e}")
+                if attempt < max_retries:
+                    continue
+                raise
+
+        error_msg = f"Failed to parse JSON response after {max_retries} attempts. Last error: {last_error}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    def _parse_json_response(self, content: str) -> dict[str, Any]:
+        """Parse JSON from LLM response with multiple fallback strategies.
+
+        Attempts multiple strategies to extract valid JSON:
+        1. Direct JSON parse
+        2. Extract JSON from markdown code blocks
+        3. Extract JSON between first { and last }
+
+        Args:
+            content: Raw response content from LLM.
+
+        Returns:
+            Parsed JSON dictionary.
+
+        Raises:
+            json.JSONDecodeError: If all parsing strategies fail.
+        """
+        content = content.strip()
+
+        # Strategy 1: Direct parse
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: Extract from markdown code block
+        patterns = [
+            r'```json\s*\n(.*?)\n```',
+            r'```\s*\n(.*?)\n```',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1).strip())
+                except json.JSONDecodeError:
+                    continue
+
+        # Strategy 3: Extract between first { and last }
+        try:
+            start = content.index('{')
+            end = content.rindex('}')
+            if start < end:
+                return json.loads(content[start:end+1])
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+        raise json.JSONDecodeError(
+            f"Could not extract valid JSON from response. Content preview: {content[:200]}...",
+            content,
+            0
         )
-        return response.content or ""
 
     async def _analyze_source_with_llm(self, content: str, source_name: str) -> dict[str, Any]:
         """Use LLM to analyze source content and extract structured information.
 
+        This method uses JSON structured output for reliable parsing.
+        On parse failure, returns empty lists/dicts and logs the error.
+
         Returns:
-            Dict with summary, claims, entities, concepts, tags
+            Dict with summary, claims, entities, concepts, tags.
+            Entities and concepts are returned as dicts for backward compatibility.
         """
-        system_prompt = """You are a knowledge extraction assistant. Analyze the provided source document and extract structured information.
+        truncated_content = content[:self.MAX_CONTENT_LENGTH] if len(content) > self.MAX_CONTENT_LENGTH else content
+        user_prompt = f"Source: {source_name}\n\nContent:\n{truncated_content}\n\nPlease analyze this source and extract the structured information as JSON."
 
-Respond in this exact format:
+        try:
+            result = await self._call_llm_json(
+                SOURCE_ANALYSIS_JSON_PROMPT,
+                user_prompt,
+                temperature=0.3,
+                max_tokens=self.MAX_ANALYSIS_TOKENS,
+                max_retries=3
+            )
 
-SUMMARY:
-[2-3 paragraph comprehensive summary of the key points]
+            # Validate and normalize the result to legacy format (dicts for entities/concepts)
+            normalized: dict[str, Any] = {
+                "summary": result.get("summary", ""),
+                "claims": result.get("claims", []) if isinstance(result.get("claims"), list) else [],
+                "entities": {},
+                "concepts": {},
+                "tags": result.get("tags", []) if isinstance(result.get("tags"), list) else [],
+            }
 
-CLAIMS:
-- [First key claim or finding]
-- [Second key claim or finding]
-- [Additional claims...]
+            # Convert entities list to dict for backward compatibility
+            entities_list = result.get("entities", [])
+            if isinstance(entities_list, list):
+                for entity in entities_list:
+                    if isinstance(entity, dict) and "name" in entity:
+                        normalized["entities"][entity["name"]] = entity.get("description", "")
 
-ENTITIES:
-- [Entity name]: [Brief description of what/who this is]
-- [Another entity]: [Description]
+            # Convert concepts list to dict for backward compatibility
+            concepts_list = result.get("concepts", [])
+            if isinstance(concepts_list, list):
+                for concept in concepts_list:
+                    if isinstance(concept, dict) and "name" in concept:
+                        normalized["concepts"][concept["name"]] = concept.get("definition", "")
 
-CONCEPTS:
-- [Concept name]: [Brief definition or explanation]
-- [Another concept]: [Definition]
+            return normalized
 
-TAGS:
-[comma, separated, list, of, relevant, tags]
-
-Be thorough but concise. Extract all significant information."""
-
-        # Truncate content if too long
-        truncated_content = content[:30000] if len(content) > 30000 else content
-        user_prompt = f"Source: {source_name}\n\nContent:\n{truncated_content}\n\nPlease analyze this source and extract the structured information."
-
-        result = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=4096)
-
-        # Parse the result
-        parsed = {
-            "summary": "",
-            "claims": [],
-            "entities": {},
-            "concepts": {},
-            "tags": [],
-        }
-
-        current_section = None
-        for line in result.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith("SUMMARY:"):
-                current_section = "summary"
-                continue
-            elif line.startswith("CLAIMS:"):
-                current_section = "claims"
-                continue
-            elif line.startswith("ENTITIES:"):
-                current_section = "entities"
-                continue
-            elif line.startswith("CONCEPTS:"):
-                current_section = "concepts"
-                continue
-            elif line.startswith("TAGS:"):
-                current_section = "tags"
-                continue
-
-            if current_section == "summary":
-                parsed["summary"] += line + "\n"
-            elif current_section == "claims" and line.startswith("-"):
-                parsed["claims"].append(line[1:].strip())
-            elif current_section == "entities" and line.startswith("-"):
-                if ":" in line:
-                    name, desc = line[1:].split(":", 1)
-                    parsed["entities"][name.strip()] = desc.strip()
-            elif current_section == "concepts" and line.startswith("-"):
-                if ":" in line:
-                    name, desc = line[1:].split(":", 1)
-                    parsed["concepts"][name.strip()] = desc.strip()
-            elif current_section == "tags":
-                tags = [t.strip() for t in line.replace(",", " ").split() if t.strip()]
-                parsed["tags"].extend(tags)
-
-        parsed["summary"] = parsed["summary"].strip()
-        return parsed
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to analyze source '{source_name}' with JSON: {e}. Returning empty analysis.")
+            # Return empty analysis on failure instead of raising
+            return {
+                "summary": "",
+                "claims": [],
+                "entities": {},
+                "concepts": {},
+                "tags": [],
+            }
 
     async def _generate_entity_page(
         self,
@@ -609,9 +920,20 @@ Format with proper markdown headers."""
         """Ingest a source file into the wiki."""
         raw_dir, wiki_dir, assets_dir = self._ensure_structure(wiki_root)
 
-        source_file = Path(source_path).expanduser().resolve()
+        # Validate source path is within allowed directories
+        try:
+            source_file = self._validate_source_path(source_path, wiki_root)
+        except ValueError as e:
+            return f"Error: {e}"
+
         if not source_file.exists():
             return f"Error: Source not found: {source_path}"
+
+        # Validate file size
+        try:
+            self._validate_file_size(source_file, max_size_mb=50)
+        except ValueError as e:
+            return f"Error: {e}"
 
         # Copy to raw directory if not already there
         if not str(source_file).startswith(str(raw_dir)):
@@ -681,7 +1003,7 @@ Format with proper markdown headers."""
 <summary>Click to expand full content</summary>
 
 ```
-{content[:50000]}  # Limit to prevent huge pages
+{content[:self.RAW_CONTENT_DISPLAY_LIMIT]}  # Limit to prevent huge pages
 ```
 
 </details>
@@ -835,8 +1157,16 @@ Format with proper markdown headers."""
         wiki_root: Path,
         query: str,
         category: str = "all",
+        save_to_wiki: bool = False,
     ) -> str:
-        """Query the wiki using LLM to synthesize an answer from relevant pages."""
+        """Query the wiki using LLM to synthesize an answer from relevant pages.
+
+        Args:
+            wiki_root: Root directory of the wiki
+            query: Search query or question
+            category: Category filter for query operations
+            save_to_wiki: If True, save the synthesis to pages/syntheses/
+        """
         self._require_llm()
         wiki_dir = wiki_root / "pages"
 
@@ -882,17 +1212,17 @@ Format with proper markdown headers."""
                     "title": frontmatter.get("title", page_file.stem),
                     "category": cat,
                     "score": score,
-                    "body": body[:3000],
+                    "body": body[:self.QUERY_CONTENT_TRUNCATE],
                 })
 
         # Sort by keyword relevance, take top pages for LLM context
         candidates.sort(key=lambda x: x["score"], reverse=True)
-        top_pages = candidates[:15]
+        top_pages = candidates[:self.MAX_QUERY_PAGES]
 
         if not top_pages:
             return (
                 f"No pages found in the wiki. "
-                f"Index overview:\n{index_content[:2000]}"
+                f"Index overview:\n{index_content[:self.INDEX_PREVIEW_LENGTH]}"
             )
 
         # Build context from top pages for LLM synthesis
@@ -912,26 +1242,40 @@ Format with proper markdown headers."""
         )
 
         user_prompt = (
-            f"Wiki Index:\n{index_content[:2000]}\n\n"
+            f"Wiki Index:\n{index_content[:self.INDEX_CONTEXT_LENGTH]}\n\n"
             f"Relevant Pages:\n{context_text}\n\n"
             f"Question: {query}"
         )
 
-        answer = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=4096)
+        answer = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=self.MAX_ANALYSIS_TOKENS)
 
         # Log the query
-        self._log_entry(wiki_root, "query", query[:80])
+        self._log_entry(wiki_root, "query", query[:self.QUERY_LOG_TRUNCATE_LENGTH])
 
         cited_pages = "\n".join(
             f"- [[{p['title']}]] (`{p['file']}`)" for p in top_pages if p["score"] > 0
         )
 
-        return (
+        # Save synthesis to wiki if requested
+        synthesis_file = None
+        if save_to_wiki:
+            sources_referenced = [p["file"] for p in top_pages if p["score"] > 0]
+            synthesis_file = await self._save_synthesis(
+                wiki_root, query, answer, sources_referenced
+            )
+            self._log_entry(wiki_root, "synthesis", f"Created synthesis for query: {query[:self.QUERY_LOG_TRUNCATE_LENGTH]}")
+
+        result = (
             f"# Query: {query}\n\n"
             f"{answer}\n\n"
             f"---\n\n"
             f"**Referenced pages:**\n{cited_pages or '(all pages scanned, no strong keyword matches)'}"
         )
+
+        if synthesis_file:
+            result += f"\n\n**Synthesis saved to:** `{synthesis_file}`"
+
+        return result
 
     async def _analyze_contradictions_with_llm(
         self,
@@ -943,9 +1287,9 @@ Format with proper markdown headers."""
 
         # Prepare page summaries for LLM
         page_summaries = []
-        for title, info in list(pages.items())[:10]:  # Limit to 10 pages for analysis
+        for title, info in list(pages.items())[:self.CONTRADICTION_ANALYSIS_LIMIT]:  # Limit to max pages for analysis
             frontmatter, body = self._read_frontmatter(info["content"])
-            summary = body[:1000]  # First 1000 chars
+            summary = body[:self.CONTRADICTION_SUMMARY_LENGTH]  # First N chars
             page_summaries.append(f"Page: {title}\n{summary}\n---")
 
         system_prompt = """You are a knowledge base auditor. Analyze the provided wiki pages for contradictions, inconsistencies, or gaps.
@@ -967,7 +1311,7 @@ Be concise and specific."""
 
         user_prompt = "Analyze these wiki pages for contradictions and issues:\n\n" + "\n\n".join(page_summaries)
 
-        result = await self._call_llm(system_prompt, user_prompt, temperature=0.2, max_tokens=2048)
+        result = await self._call_llm(system_prompt, user_prompt, temperature=0.2, max_tokens=self.CONTRADICTION_MAX_TOKENS)
 
         if "No contradictions" in result or not result.strip():
             return []
@@ -1006,9 +1350,9 @@ Format:
 Be concise."""
 
         frontmatter, body = self._read_frontmatter(content)
-        user_prompt = f"Page: {title}\n\nContent:\n{body[:5000]}\n\nPlease analyze this page for quality issues."
+        user_prompt = f"Page: {title}\n\nContent:\n{body[:self.QUALITY_ANALYSIS_LENGTH]}\n\nPlease analyze this page for quality issues."
 
-        result = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=1024)
+        result = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=self.QUALITY_MAX_TOKENS)
 
         if "good quality" in result.lower() or not result.strip():
             return []
@@ -1090,12 +1434,12 @@ Be concise."""
                     try:
                         updated_date = datetime.strptime(updated, "%Y-%m-%d")
                         days_old = (datetime.now() - updated_date).days
-                        if days_old > 90:
+                        if days_old > self.STALE_THRESHOLD_DAYS:
                             stale.append(f"{title} ({days_old} days)")
                     except ValueError:
                         pass
             if stale:
-                issues.append(f"**Stale pages** (>90 days): {', '.join(stale[:10])}")
+                issues.append(f"**Stale pages** (>{self.STALE_THRESHOLD_DAYS} days): {', '.join(stale[:10])}")
 
         # LLM-powered analysis
         if check_type in ("contradictions", "all") and len(all_pages) >= 2:
