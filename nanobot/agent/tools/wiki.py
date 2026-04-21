@@ -1149,7 +1149,8 @@ Format with proper markdown headers."""
                 if entity_page:
                     entity_pages.append(entity_name)
             except Exception as e:
-                pass  # Continue even if entity generation fails
+                logger.warning(f"Failed to generate entity page for '{entity_name}': {e}")
+                # Continue even if entity generation fails
 
         # Generate concept pages
         concept_pages = []
@@ -1159,7 +1160,8 @@ Format with proper markdown headers."""
                 if concept_page:
                     concept_pages.append(concept_name)
             except Exception as e:
-                pass  # Continue even if concept generation fails
+                logger.warning(f"Failed to generate concept page for '{concept_name}': {e}")
+                # Continue even if concept generation fails
 
         # Log the operation
         self._log_entry(wiki_root, "ingest", f"Processed source: {source_name}")
@@ -1344,7 +1346,7 @@ Format with proper markdown headers."""
             links = link_pattern.findall(info["content"])
             if page_title in links:
                 # Check if backlink already exists
-                if "## Backlinks" not in info["body"]:
+                if f"[[{page_title}]]" not in info["body"]:
                     backlinks_to_update.append((title, info))
 
         # Update pages with new backlinks section
