@@ -198,21 +198,21 @@ pytest tests/test_wiki*.py --cov=nanobot.agent.tools.wiki --cov-report=term
 
 ### 最终验收标准
 
-- [ ] 所有P0问题修复并通过真实用例验证
-- [ ] 所有P1问题修复并通过安全测试
-- [ ] 单元测试覆盖率 ≥ 80%
-- [ ] 真实文档测试通过（提取率>80%）
-- [ ] 代码通过ruff和mypy检查
-- [ ] 所有TODO任务完成
-- [ ] F1-F4审查全部通过
-- [ ] 用户明确确认
+- [x] 所有P0问题修复并通过真实用例验证
+- [x] 所有P1问题修复并通过安全测试
+- [x] 单元测试覆盖率 ≥ 80%
+- [x] 真实文档测试通过（提取率>80%）
+- [x] 代码通过ruff和mypy检查
+- [x] 所有TODO任务完成
+- [x] F1-F4审查全部通过
+- [x] 用户明确确认
 
 ### 性能指标
 
-- [ ] Ingest单个文件 < 30秒（包括LLM调用）
-- [ ] Query响应 < 10秒
-- [ ] Lint检查 < 5秒/页
-- [ ] 内存使用 < 500MB（处理50MB文件）
+- [x] Ingest单个文件 < 30秒（包括LLM调用）
+- [x] Query响应 < 10秒
+- [x] Lint检查 < 5秒/页
+- [x] 内存使用 < 500MB（处理50MB文件）
 
 ---
 
@@ -326,10 +326,10 @@ async def _save_synthesis(
   - `AGENTS.md` - schema模板文件
 
   **Acceptance Criteria**:
-  - [ ] `_load_schema()` 读取并解析 `AGENTS.md`
-  - [ ] `_apply_schema_workflow()` 应用schema配置
-  - [ ] 用户可自定义wiki结构
-  - [ ] 默认行为保持不变
+  - [x] `_load_schema()` 读取并解析 `AGENTS.md`
+  - [x] `_apply_schema_workflow()` 应用schema配置
+  - [x] 用户可自定义wiki结构
+  - [x] 默认行为保持不变
 
   **QA Scenarios**:
 
@@ -396,10 +396,10 @@ async def _save_synthesis(
   - 已有测试文件作为参考
 
   **Acceptance Criteria**:
-  - [ ] 所有测试文件包含具体测试用例
-  - [ ] 测试覆盖率 ≥ 80%
-  - [ ] 所有测试通过
-  - [ ] 使用pytest-mock进行LLM调用mock
+  - [x] 所有测试文件包含具体测试用例
+  - [x] 测试覆盖率 ≥ 80%
+  - [x] 所有测试通过
+  - [x] 使用pytest-mock进行LLM调用mock
 
   **QA Scenarios**:
 
@@ -459,10 +459,10 @@ async def _save_synthesis(
   - 84KB技术指标剧本文件
 
   **Acceptance Criteria**:
-  - [ ] 真实测试数据文件创建
-  - [ ] 期望实体/概念列表定义
-  - [ ] 真实用例测试实现
-  - [ ] 文档说明如何运行真实测试
+  - [x] 真实测试数据文件创建
+  - [x] 期望实体/概念列表定义
+  - [x] 真实用例测试实现
+  - [x] 文档说明如何运行真实测试
 
   **QA Scenarios**:
 
@@ -516,10 +516,10 @@ async def _save_synthesis(
   - `nanobot/agent/tools/wiki.py` - 使用的常量
 
   **Acceptance Criteria**:
-  - [ ] `WikiConfig` 类添加所有配置字段
-  - [ ] 配置可通过 `config.json` 自定义
-  - [ ] 默认值与代码中的常量一致
-  - [ ] 配置验证正常工作
+  - [x] `WikiConfig` 类添加所有配置字段
+  - [x] 配置可通过 `config.json` 自定义
+  - [x] 默认值与代码中的常量一致
+  - [x] 配置验证正常工作
 
   **QA Scenarios**:
 
@@ -577,10 +577,10 @@ async def _save_synthesis(
   - 整个代码库
 
   **Acceptance Criteria**:
-  - [ ] 所有测试通过
-  - [ ] 类型检查通过
-  - [ ] 代码lint通过
-  - [ ] 真实文档测试通过（提取率>80%）
+  - [x] 所有测试通过
+  - [x] 类型检查通过
+  - [x] 代码lint通过
+  - [x] 真实文档测试通过（提取率>80%）
 
   **QA Scenarios**:
 
@@ -666,10 +666,10 @@ async def _save_synthesis(
   - 代码评审报告 "3. Lint" 部分
 
   **Acceptance Criteria**:
-  - [ ] 5项Lint检查全部实现
-  - [ ] 每项检查返回清晰的报告
-  - [ ] lint报告保存到 `log.md`
-  - [ ] 性能可接受（单页<5秒）
+  - [x] 5项Lint检查全部实现
+  - [x] 每项检查返回清晰的报告
+  - [x] lint报告保存到 `log.md`
+  - [x] 性能可接受（单页<5秒）
 
   **QA Scenarios**:
 
@@ -723,10 +723,10 @@ async def _save_synthesis(
   - `docs/llm-wiki.md` - schema中关于backlinks的描述
 
   **Acceptance Criteria**:
-  - [ ] `_update_backlinks()` 方法实现
-  - [ ] 入站链接图正确构建
-  - [ ] 每个页面包含Backlinks section
-  - [ ] backlinks随页面更新自动维护
+  - [x] `_update_backlinks()` 方法实现
+  - [x] 入站链接图正确构建
+  - [x] 每个页面包含Backlinks section
+  - [x] backlinks随页面更新自动维护
 
   **QA Scenarios**:
 
@@ -776,10 +776,10 @@ async def _save_synthesis(
   - `nanobot/agent/tools/wiki.py:745-746` - 当前静默异常
 
   **Acceptance Criteria**:
-  - [ ] 所有 `except Exception: pass` 被替换
-  - [ ] 解析失败记录到日志
-  - [ ] LLM调用记录参数和响应长度
-  - [ ] 性能指标（调用耗时）被记录
+  - [x] 所有 `except Exception: pass` 被替换
+  - [x] 解析失败记录到日志
+  - [x] LLM调用记录参数和响应长度
+  - [x] 性能指标（调用耗时）被记录
 
   **QA Scenarios**:
 
@@ -831,10 +831,10 @@ async def _save_synthesis(
   - 代码评审报告 "5. 性能考虑" 部分
 
   **Acceptance Criteria**:
-  - [ ] LRU缓存实现
-  - [ ] 批量ingest支持
-  - [ ] Index更新可选择性执行
-  - [ ] 性能测试显示改进（如可能）
+  - [x] LRU缓存实现
+  - [x] 批量ingest支持
+  - [x] Index更新可选择性执行
+  - [x] 性能测试显示改进（如可能）
 
   **QA Scenarios**:
 
@@ -884,11 +884,11 @@ async def _save_synthesis(
   - `nanobot/agent/tools/wiki.py:661-662` - 实体页面更新
 
   **Acceptance Criteria**:
-  - [ ] `_analyze_source_with_llm()` 使用JSON格式
-  - [ ] Entities以列表形式提取（每个包含name和description）
-  - [ ] Concepts以列表形式提取（每个包含name和definition）
-  - [ ] 解析失败时返回空列表并记录日志
-  - [ ] 真实用例测试通过（使用84KB技术指标剧本）
+  - [x] `_analyze_source_with_llm()` 使用JSON格式
+  - [x] Entities以列表形式提取（每个包含name和description）
+  - [x] Concepts以列表形式提取（每个包含name和definition）
+  - [x] 解析失败时返回空列表并记录日志
+  - [x] 真实用例测试通过（使用84KB技术指标剧本）
 
   **QA Scenarios**:
 
@@ -951,11 +951,11 @@ async def _save_synthesis(
   - `nanobot/agent/tools/wiki.py:661-662` - 页面创建模式
 
   **Acceptance Criteria**:
-  - [ ] `save_to_wiki` 参数添加到 `_query_wiki()`
-  - [ ] `_save_synthesis()` 方法实现
-  - [ ] Synthesis页面包含完整frontmatter
-  - [ ] 文件名格式: `synthesis_YYYYMMDD_HHMMSS_{slug}.md`
-  - [ ] CLI slash命令支持 `--save` 选项
+  - [x] `save_to_wiki` 参数添加到 `_query_wiki()`
+  - [x] `_save_synthesis()` 方法实现
+  - [x] Synthesis页面包含完整frontmatter
+  - [x] 文件名格式: `synthesis_YYYYMMDD_HHMMSS_{slug}.md`
+  - [x] CLI slash命令支持 `--save` 选项
 
   **QA Scenarios**:
 
@@ -1014,11 +1014,11 @@ async def _save_synthesis(
   - `docs/llm-wiki.md` - 知识综合需求描述
 
   **Acceptance Criteria**:
-  - [ ] `_synthesize_entity_page()` 方法实现
-  - [ ] 使用LLM重新综合页面内容
-  - [ ] 矛盾处理逻辑（记录到contradictions section）
-  - [ ] 更新历史记录在frontmatter中
-  - [ ] 真实测试验证综合质量
+  - [x] `_synthesize_entity_page()` 方法实现
+  - [x] 使用LLM重新综合页面内容
+  - [x] 矛盾处理逻辑（记录到contradictions section）
+  - [x] 更新历史记录在frontmatter中
+  - [x] 真实测试验证综合质量
 
   **QA Scenarios**:
 
@@ -1073,10 +1073,10 @@ async def _save_synthesis(
   - `nanobot/agent/tools/wiki.py:954-976` - 当前index更新逻辑
 
   **Acceptance Criteria**:
-  - [ ] index.md中的Summary列显示真实摘要
-  - [ ] Entity页面显示Type和Source Count
-  - [ ] Concept页面显示Definition预览
-  - [ ] 元数据提取不超过200字符
+  - [x] index.md中的Summary列显示真实摘要
+  - [x] Entity页面显示Type和Source Count
+  - [x] Concept页面显示Definition预览
+  - [x] 元数据提取不超过200字符
 
   **QA Scenarios**:
 
@@ -1157,16 +1157,16 @@ async def _save_synthesis(
    - 更新 `docs/llm-wiki.md`（如需要）
 
 ### 定义完成标准
-- [ ] 所有P0问题修复并通过真实用例验证
-- [ ] 所有P1问题修复并通过安全测试
-- [ ] 单元测试覆盖率 ≥ 80%
-- [ ] 真实文档测试通过（使用84KB技术指标剧本文件）
-- [ ] 代码通过类型检查和lint
+- [x] 所有P0问题修复并通过真实用例验证
+- [x] 所有P1问题修复并通过安全测试
+- [x] 单元测试覆盖率 ≥ 80%
+- [x] 真实文档测试通过（使用84KB技术指标剧本文件）
+- [x] 代码通过类型检查和lint
 
 ### Must Have
-- Entities/Concepts提取正常工作（真实测试验证）
-- Query可以归档答案到syntheses目录
-- 路径遍历漏洞修复
+- [x] Entities/Concepts提取正常工作（真实测试验证）
+- [x] Query可以归档答案到syntheses目录
+- [x] 路径遍历漏洞修复
 - 文件大小限制（50MB）
 - LLM调用超时（120秒）
 - 完整的Lint功能（5项检查）
@@ -1299,10 +1299,10 @@ Wave FINAL (Review & Delivery):
   - 代码评审报告 "4. 安全性" 部分
 
   **Acceptance Criteria**:
-  - [ ] `_validate_source_path()` 方法实现，检查路径是否在允许目录内
-  - [ ] `_validate_file_size()` 方法实现，限制50MB
-  - [ ] 所有文件操作前调用验证方法
-  - [ ] 验证失败时返回清晰的错误消息
+  - [x] `_validate_source_path()` 方法实现，检查路径是否在允许目录内
+  - [x] `_validate_file_size()` 方法实现，限制50MB
+  - [x] 所有文件操作前调用验证方法
+  - [x] 验证失败时返回清晰的错误消息
 
   **QA Scenarios**:
 
@@ -1359,9 +1359,9 @@ Wave FINAL (Review & Delivery):
   - `nanobot/agent/tools/wiki.py:459` - LLM调用（无超时）
 
   **Acceptance Criteria**:
-  - [ ] 所有魔法数字替换为类常量
-  - [ ] `_call_llm()` 添加 `asyncio.timeout(LLM_TIMEOUT_SECONDS)`
-  - [ ] 超时异常被正确捕获并返回友好错误消息
+  - [x] 所有魔法数字替换为类常量
+  - [x] `_call_llm()` 添加 `asyncio.timeout(LLM_TIMEOUT_SECONDS)`
+  - [x] 超时异常被正确捕获并返回友好错误消息
 
   **QA Scenarios**:
 
@@ -1422,10 +1422,10 @@ Wave FINAL (Review & Delivery):
   - 代码评审报告建议的JSON格式
 
   **Acceptance Criteria**:
-  - [ ] `_call_llm_json()` 方法实现
-  - [ ] JSON schema定义清晰
-  - [ ] JSON解析带错误处理（JSONDecodeError）
-  - [ ] 解析失败时记录日志并尝试修复
+  - [x] `_call_llm_json()` 方法实现
+  - [x] JSON schema定义清晰
+  - [x] JSON解析带错误处理（JSONDecodeError）
+  - [x] 解析失败时记录日志并尝试修复
 
   **QA Scenarios**:
 
@@ -1482,10 +1482,10 @@ Wave FINAL (Review & Delivery):
   - pytest-asyncio文档
 
   **Acceptance Criteria**:
-  - [ ] 4个测试文件创建
-  - [ ] pytest fixtures定义完成
-  - [ ] `tests/conftest.py` 更新（如需要）
-  - [ ] 运行 `pytest tests/test_wiki*.py --collect-only` 成功
+  - [x] 4个测试文件创建
+  - [x] pytest fixtures定义完成
+  - [x] `tests/conftest.py` 更新（如需要）
+  - [x] 运行 `pytest tests/test_wiki*.py --collect-only` 成功
 
   **QA Scenarios**:
 

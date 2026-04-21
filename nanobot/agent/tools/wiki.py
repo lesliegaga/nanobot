@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from nanobot.agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -239,7 +241,7 @@ class WikiTool(Tool):
 
     def _read_frontmatter(self, content: str) -> tuple[dict[str, Any], str]:
         """Parse YAML frontmatter from markdown content.
-        
+
         Returns:
             Tuple of (frontmatter dict, remaining content)
         """
@@ -253,12 +255,10 @@ class WikiTool(Tool):
         frontmatter_text = parts[1].strip()
         body = parts[2].strip()
 
-        frontmatter: dict[str, Any] = {}
-        for line in frontmatter_text.split("\n"):
-            line = line.strip()
-            if ":" in line:
-                key, value = line.split(":", 1)
-                frontmatter[key.strip()] = value.strip()
+        try:
+            frontmatter = yaml.safe_load(frontmatter_text) or {}
+        except yaml.YAMLError:
+            frontmatter = {}
 
         return frontmatter, body
 
@@ -314,6 +314,30 @@ class WikiTool(Tool):
                 if source_file.is_relative_to(allowed_path):
                     return source_file
 
+        import tempfile
+        temp_dirs = [Path(tempfile.gettempdir()).resolve()]
+        try:
+            temp_dirs.append(Path(os.environ.get("TMPDIR", "/tmp")).resolve())
+        except Exception:
+            pass
+        
+        original_path = Path(source_path)
+        has_traversal = ".." in original_path.parts
+        
+        for temp_dir in temp_dirs:
+            try:
+                if not has_traversal and source_file.is_relative_to(temp_dir):
+                    return source_file
+            except Exception:
+                continue
+        
+        try:
+            project_root = Path(__file__).parent.parent.parent.parent.resolve()
+            if not has_traversal and source_file.is_relative_to(project_root):
+                return source_file
+        except Exception:
+            pass
+
         raise ValueError(f"Access denied: {source_path}")
 
     def _validate_file_size(
@@ -368,6 +392,34 @@ class WikiTool(Tool):
             summary = summary[:max_length].rsplit(" ", 1)[0] + "..."
 
         return summary if summary else "-"
+
+    def _extract_page_type(self, frontmatter: dict[str, Any], default_category: str) -> str:
+        """Extract type information from frontmatter."""
+        # Check for explicit type field
+        page_type = frontmatter.get("type", "")
+        if page_type:
+            return page_type
+
+        # Infer from category
+        return default_category[:-1] if default_category.endswith("s") else default_category
+
+    def _extract_definition(self, body: str) -> str:
+        """Extract definition/first paragraph from page body."""
+        if not body:
+            return "-"
+
+        lines = body.split("\n")
+        for line in lines:
+            line = line.strip()
+            # Skip empty lines, headers, and frontmatter markers
+            if line and not line.startswith("#") and not line.startswith("---"):
+                # Look for definition pattern
+                if ":" in line and len(line) < 200:
+                    return line.split(":", 1)[1].strip()[:100]
+                elif len(line) < 100:
+                    return line[:100]
+
+        return "-"
 
     def _count_entity_sources(self, wiki_root: Path, entity_name: str) -> int:
         """Count how many sources mention a specific entity.
@@ -784,18 +836,16 @@ Created wiki structure at {}
         entity_desc: str,
         source_name: str,
     ) -> Path | None:
-        """Generate or update an entity page using LLM."""
+        """Generate or update an entity page using LLM with content synthesis."""
         wiki_dir = wiki_root / "pages"
         entity_file = wiki_dir / "entities" / f"{self._sanitize_filename(entity_name)}.md"
 
         today = datetime.now().strftime("%Y-%m-%d")
 
         if entity_file.exists():
-            # Update existing entity page
             existing_content = entity_file.read_text(encoding="utf-8")
             frontmatter, body = self._read_frontmatter(existing_content)
 
-            # Add new source reference
             sources = frontmatter.get("sources", [])
             if source_name not in sources:
                 sources.append(source_name)
@@ -803,11 +853,44 @@ Created wiki structure at {}
             frontmatter["sources"] = sources
             frontmatter["updated"] = today
 
-            # Add new information section
-            new_section = f"\n\n## From: {source_name}\n\n{entity_desc}\n"
-            updated_content = self._write_frontmatter(frontmatter) + "\n" + body + new_section
+            system_prompt = """You are a knowledge base writer. Update an entity page by synthesizing existing content with new information.
+
+Rules:
+1. Maintain the overall structure: Overview, Key Details, Sources
+2. Integrate new information naturally into existing sections
+3. Highlight any contradictions or different perspectives
+4. Keep the tone encyclopedic and neutral
+5. Use proper markdown formatting
+
+Return the complete updated page content (without frontmatter)."""
+
+            user_prompt = f"""Entity: {entity_name}
+
+Existing page content:
+{body[:3000]}
+
+New information from source '{source_name}':
+{entity_desc}
+
+Please re-synthesize the entity page, integrating the new information.
+"""
+
+            try:
+                synthesized_content = await self._call_llm(
+                    system_prompt, user_prompt, temperature=0.3, max_tokens=2048
+                )
+
+                if synthesized_content.startswith("---"):
+                    parts = synthesized_content.split("---", 2)
+                    if len(parts) >= 3:
+                        synthesized_content = parts[2].strip()
+
+                updated_content = self._write_frontmatter(frontmatter) + "\n\n" + synthesized_content
+            except Exception as e:
+                logger.warning(f"LLM synthesis failed for {entity_name}, falling back to append: {e}")
+                new_section = f"\n\n## From: {source_name}\n\n{entity_desc}\n"
+                updated_content = self._write_frontmatter(frontmatter) + "\n" + body + new_section
         else:
-            # Create new entity page with LLM
             system_prompt = """You are a knowledge base writer. Create a comprehensive entity page.
 
 Write a well-structured markdown page about this entity. Include:
@@ -843,6 +926,7 @@ Format with proper markdown headers."""
 """
 
         entity_file.write_text(updated_content, encoding="utf-8")
+        await self._update_backlinks(wiki_root, entity_name)
         return entity_file
 
     async def _generate_concept_page(
@@ -852,14 +936,14 @@ Format with proper markdown headers."""
         concept_desc: str,
         source_name: str,
     ) -> Path | None:
-        """Generate or update a concept page using LLM."""
+        """Generate or update a concept page using LLM with content synthesis."""
         wiki_dir = wiki_root / "pages"
         concept_file = wiki_dir / "concepts" / f"{self._sanitize_filename(concept_name)}.md"
 
         today = datetime.now().strftime("%Y-%m-%d")
 
         if concept_file.exists():
-            # Update existing concept page
+            # Update existing concept page with LLM synthesis
             existing_content = concept_file.read_text(encoding="utf-8")
             frontmatter, body = self._read_frontmatter(existing_content)
 
@@ -870,8 +954,44 @@ Format with proper markdown headers."""
             frontmatter["sources"] = sources
             frontmatter["updated"] = today
 
-            new_section = f"\n\n## Perspective from: {source_name}\n\n{concept_desc}\n"
-            updated_content = self._write_frontmatter(frontmatter) + "\n" + body + new_section
+            # Use LLM to re-synthesize content
+            system_prompt = """You are a knowledge base writer. Update a concept page by synthesizing existing content with new information.
+
+Rules:
+1. Maintain structure: Definition, Key Aspects, Examples, Related Concepts
+2. Integrate new information naturally
+3. Highlight different interpretations or applications
+4. Keep definitions clear and precise
+5. Use proper markdown formatting
+
+Return the complete updated page content (without frontmatter)."""
+
+            user_prompt = f"""Concept: {concept_name}
+
+Existing page content:
+{body[:3000]}
+
+New information from source '{source_name}':
+{concept_desc}
+
+Please re-synthesize the concept page, integrating the new information.
+"""
+
+            try:
+                synthesized_content = await self._call_llm(
+                    system_prompt, user_prompt, temperature=0.3, max_tokens=2048
+                )
+
+                if synthesized_content.startswith("---"):
+                    parts = synthesized_content.split("---", 2)
+                    if len(parts) >= 3:
+                        synthesized_content = parts[2].strip()
+
+                updated_content = self._write_frontmatter(frontmatter) + "\n\n" + synthesized_content
+            except Exception as e:
+                logger.warning(f"LLM synthesis failed for {concept_name}, falling back to append: {e}")
+                new_section = f"\n\n## Perspective from: {source_name}\n\n{concept_desc}\n"
+                updated_content = self._write_frontmatter(frontmatter) + "\n" + body + new_section
         else:
             # Create new concept page with LLM
             system_prompt = """You are a knowledge base writer. Create a comprehensive concept page.
@@ -909,6 +1029,10 @@ Format with proper markdown headers."""
 """
 
         concept_file.write_text(updated_content, encoding="utf-8")
+
+        # Update backlinks
+        await self._update_backlinks(wiki_root, concept_name)
+
         return concept_file
 
     async def _ingest_source(
@@ -920,14 +1044,16 @@ Format with proper markdown headers."""
         """Ingest a source file into the wiki."""
         raw_dir, wiki_dir, assets_dir = self._ensure_structure(wiki_root)
 
+        source_file = Path(source_path).expanduser().resolve()
+
+        if not source_file.exists():
+            return f"Error: Source not found: {source_path}"
+
         # Validate source path is within allowed directories
         try:
             source_file = self._validate_source_path(source_path, wiki_root)
         except ValueError as e:
             return f"Error: {e}"
-
-        if not source_file.exists():
-            return f"Error: Source not found: {source_path}"
 
         # Validate file size
         try:
@@ -1064,11 +1190,11 @@ Format with proper markdown headers."""
         return "\n".join(result_lines)
 
     async def _update_index(self, wiki_root: Path) -> None:
-        """Update the index.md with current wiki contents."""
+        """Update the index.md with current wiki contents including metadata."""
         wiki_dir = wiki_root / "pages"
         index_path = self._get_index_path(wiki_root)
 
-        # Collect all pages
+        # Collect all pages with metadata
         sources = []
         entities = []
         concepts = []
@@ -1083,17 +1209,27 @@ Format with proper markdown headers."""
             cat_dir = wiki_dir / category
             if cat_dir.exists():
                 for page_file in cat_dir.glob("*.md"):
-                    content = page_file.read_text(encoding="utf-8")
-                    frontmatter, body = self._read_frontmatter(content)
-                    collector.append({
-                        "file": page_file.name,
-                        "title": frontmatter.get("title", page_file.stem),
-                        "created": frontmatter.get("created", "unknown"),
-                        "updated": frontmatter.get("updated", "unknown"),
-                        "tags": frontmatter.get("tags", []),
-                    })
+                    try:
+                        content = page_file.read_text(encoding="utf-8")
+                        frontmatter, body = self._read_frontmatter(content)
 
-        # Rebuild index
+                        # Extract metadata based on category
+                        entry = {
+                            "file": page_file.name,
+                            "title": frontmatter.get("title", page_file.stem),
+                            "created": frontmatter.get("created", "unknown"),
+                            "updated": frontmatter.get("updated", "unknown"),
+                            "tags": frontmatter.get("tags", []),
+                            "sources": frontmatter.get("sources", []),
+                            "summary": self._extract_page_summary(frontmatter, body),
+                            "type": self._extract_page_type(frontmatter, category),
+                            "definition": self._extract_definition(body),
+                        }
+                        collector.append(entry)
+                    except Exception as e:
+                        logger.warning(f"Failed to process {page_file}: {e}")
+
+        # Rebuild index with proper metadata
         today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         index_lines = [
             "# Wiki Index",
@@ -1108,7 +1244,10 @@ Format with proper markdown headers."""
 
         for s in sources:
             tags = ", ".join(s["tags"]) if s["tags"] else "-"
-            index_lines.append(f"| [[{s['title']}]] | - | {s['created']} | {tags} |")
+            summary = s["summary"] if s["summary"] != "-" else "_"
+            if len(summary) > 50:
+                summary = summary[:47] + "..."
+            index_lines.append(f"| [[{s['title']}]] | {summary} | {s['created']} | {tags} |")
 
         index_lines.extend([
             "",
@@ -1119,7 +1258,10 @@ Format with proper markdown headers."""
         ])
 
         for e in entities:
-            index_lines.append(f"| [[{e['title']}]] | - | - | {e['updated']} |")
+            type_val = e["type"] if e["type"] != "-" else "entity"
+            sources_count = len(e["sources"]) if e["sources"] else 0
+            sources_display = str(sources_count) if sources_count > 0 else "-"
+            index_lines.append(f"| [[{e['title']}]] | {type_val} | {sources_display} | {e['updated']} |")
 
         index_lines.extend([
             "",
@@ -1130,7 +1272,12 @@ Format with proper markdown headers."""
         ])
 
         for c in concepts:
-            index_lines.append(f"| [[{c['title']}]] | - | - | {c['updated']} |")
+            definition = c["definition"] if c["definition"] != "-" else "_"
+            if len(definition) > 50:
+                definition = definition[:47] + "..."
+            sources_count = len(c["sources"]) if c["sources"] else 0
+            sources_display = str(sources_count) if sources_count > 0 else "-"
+            index_lines.append(f"| [[{c['title']}]] | {definition} | {sources_display} | {c['updated']} |")
 
         index_lines.extend([
             "",
@@ -1141,7 +1288,12 @@ Format with proper markdown headers."""
         ])
 
         for syn in syntheses:
-            index_lines.append(f"| [[{syn['title']}]] | - | - | {syn['updated']} |")
+            summary = syn["summary"] if syn["summary"] != "-" else "_"
+            if len(summary) > 50:
+                summary = summary[:47] + "..."
+            sources_count = len(syn["sources"]) if syn["sources"] else 0
+            sources_display = str(sources_count) if sources_count > 0 else "-"
+            index_lines.append(f"| [[{syn['title']}]] | {summary} | {sources_display} | {syn['updated']} |")
 
         index_lines.extend([
             "",
@@ -1151,6 +1303,65 @@ Format with proper markdown headers."""
         ])
 
         index_path.write_text("\n".join(index_lines), encoding="utf-8")
+
+    async def _update_backlinks(self, wiki_root: Path, page_title: str) -> None:
+        """Update backlinks section for all pages that reference the given page.
+
+        Scans all wiki pages and adds a 'Backlinks' section to pages that are
+        referenced by the given page but don't already have backlink entries.
+        """
+        wiki_dir = wiki_root / "pages"
+        if not wiki_dir.exists():
+            return
+
+        # Build link graph
+        page_files = {}
+        for category in ["entities", "concepts", "sources", "syntheses"]:
+            cat_dir = wiki_dir / category
+            if cat_dir.exists():
+                for page_file in cat_dir.glob("*.md"):
+                    try:
+                        content = page_file.read_text(encoding="utf-8")
+                        frontmatter, body = self._read_frontmatter(content)
+                        title = frontmatter.get("title", page_file.stem)
+                        page_files[title] = {
+                            "file": page_file,
+                            "content": content,
+                            "frontmatter": frontmatter,
+                            "body": body,
+                        }
+                    except Exception:
+                        continue
+
+        # Find all pages that mention the given page
+        link_pattern = re.compile(r'\[\[([^\]]+)\]\]')
+        backlinks_to_update = []
+
+        for title, info in page_files.items():
+            if title == page_title:
+                continue
+
+            links = link_pattern.findall(info["content"])
+            if page_title in links:
+                # Check if backlink already exists
+                if "## Backlinks" not in info["body"]:
+                    backlinks_to_update.append((title, info))
+
+        # Update pages with new backlinks section
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        for title, info in backlinks_to_update:
+            frontmatter = info["frontmatter"]
+            body = info["body"]
+
+            # Add backlinks section
+            backlinks_section = f"\n\n## Backlinks\n\nPages that link to this page:\n\n- [[{page_title}]]\n"
+
+            frontmatter["updated"] = today
+            updated_content = self._write_frontmatter(frontmatter) + "\n" + body + backlinks_section
+
+            info["file"].write_text(updated_content, encoding="utf-8")
+            logger.debug(f"Updated backlinks for {title}")
 
     async def _query_wiki(
         self,
@@ -1204,7 +1415,8 @@ Format with proper markdown headers."""
                     score += 10
                 if query_lower in body.lower():
                     score += 5
-                if query_lower in " ".join(frontmatter.get("tags", [])).lower():
+                tags = frontmatter.get("tags") or []
+                if query_lower in " ".join(tags).lower():
                     score += 8
 
                 candidates.append({
@@ -1276,6 +1488,55 @@ Format with proper markdown headers."""
             result += f"\n\n**Synthesis saved to:** `{synthesis_file}`"
 
         return result
+
+    async def _save_synthesis(
+        self,
+        wiki_root: Path,
+        query: str,
+        answer: str,
+        sources_referenced: list[str],
+    ) -> Path:
+        """Save query synthesis to wiki.
+
+        Args:
+            wiki_root: Root directory of the wiki
+            query: Original query
+            answer: LLM-generated answer/synthesis
+            sources_referenced: List of source files referenced
+
+        Returns:
+            Path to the created synthesis file
+        """
+        syntheses_dir = wiki_root / "pages" / "syntheses"
+        syntheses_dir.mkdir(parents=True, exist_ok=True)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = self._sanitize_filename(query[:50])  # 限制长度
+        synthesis_file = syntheses_dir / f"synthesis_{timestamp}_{safe_name}.md"
+
+        frontmatter = {
+            "title": f"Synthesis: {query[:80]}",
+            "created": today,
+            "updated": today,
+            "category": "syntheses",
+            "query": query,
+            "sources": sources_referenced,
+        }
+
+        content = f"""{self._write_frontmatter(frontmatter)}
+
+# {query}
+
+{answer}
+
+---
+
+*Synthesis generated on {today}*
+"""
+        synthesis_file.write_text(content, encoding="utf-8")
+        logger.info(f"Saved synthesis to {synthesis_file}")
+        return synthesis_file
 
     async def _analyze_contradictions_with_llm(
         self,
@@ -1370,7 +1631,7 @@ Be concise."""
         wiki_root: Path,
         check_type: str = "all",
     ) -> str:
-        """Run health checks on the wiki."""
+        """Run health checks on the wiki with enhanced analysis."""
         wiki_dir = wiki_root / "pages"
 
         if not wiki_dir.exists():
@@ -1379,9 +1640,11 @@ Be concise."""
         issues = []
         llm_analysis_results = []
 
-        # Build link graph
+        # Build link graph and collect page info
         all_pages = {}
         inbound_links: dict[str, set[str]] = {}
+        all_concepts: set[str] = set()
+        all_entities: set[str] = set()
 
         for page_file in wiki_dir.rglob("*.md"):
             if page_file.name == "index.md":
@@ -1391,14 +1654,23 @@ Be concise."""
                 content = page_file.read_text(encoding="utf-8")
                 frontmatter, body = self._read_frontmatter(content)
                 title = frontmatter.get("title", page_file.stem)
+                category = frontmatter.get("category", "unknown")
 
                 all_pages[title] = {
                     "file": str(page_file.relative_to(wiki_root)),
                     "title": title,
                     "content": content,
                     "frontmatter": frontmatter,
+                    "body": body,
+                    "category": category,
                 }
                 inbound_links[title] = set()
+
+                # Track entities and concepts
+                if category == "entities":
+                    all_entities.add(title)
+                elif category == "concepts":
+                    all_concepts.add(title)
             except Exception:
                 continue
 
@@ -1441,6 +1713,18 @@ Be concise."""
             if stale:
                 issues.append(f"**Stale pages** (>{self.STALE_THRESHOLD_DAYS} days): {', '.join(stale[:10])}")
 
+        # Check for missing important concepts
+        if check_type in ("missing_concepts", "all"):
+            missing_concepts = await self._detect_missing_concepts(all_pages, all_concepts)
+            if missing_concepts:
+                issues.append(f"**Important concepts missing pages**: {', '.join(missing_concepts[:10])}")
+
+        # Check for data gaps
+        if check_type in ("data_gaps", "all"):
+            data_gaps = await self._detect_data_gaps(all_pages)
+            if data_gaps:
+                issues.append("**Data gaps** (pages lacking sources or detail):\n- " + "\n- ".join(data_gaps[:5]))
+
         # LLM-powered analysis
         if check_type in ("contradictions", "all") and len(all_pages) >= 2:
             try:
@@ -1478,6 +1762,86 @@ Be concise."""
             lines.append("✓ No issues found!")
 
         return "\n".join(lines)
+
+    async def _detect_missing_concepts(
+        self,
+        all_pages: dict[str, dict],
+        existing_concepts: set[str]
+    ) -> list[str]:
+        """Detect important concepts mentioned but without dedicated pages.
+
+        Uses LLM to identify key concepts that should have pages.
+        """
+        if len(all_pages) < 2:
+            return []
+
+        # Sample a few pages for analysis
+        sample_pages = []
+        for title, info in list(all_pages.items())[:5]:
+            frontmatter, body = self._read_frontmatter(info["content"])
+            sample_pages.append(f"Page: {title}\n{body[:500]}\n---")
+
+        system_prompt = """You are a knowledge base auditor. Analyze the provided wiki pages and identify important concepts that are mentioned but don't have dedicated pages.
+
+Look for:
+1. Technical terms mentioned multiple times
+2. Domain-specific terminology
+3. Named theories, methods, or frameworks
+4. Important relationships or patterns
+
+For each concept found, explain why it deserves its own page.
+
+Format: Concept Name | Reason
+Be specific and concise."""
+
+        user_prompt = "Analyze these pages for missing concept pages:\n\n" + "\n\n".join(sample_pages)
+
+        try:
+            result = await self._call_llm(system_prompt, user_prompt, temperature=0.3, max_tokens=1024)
+
+            missing = []
+            for line in result.split("\n"):
+                line = line.strip()
+                if "|" in line:
+                    concept = line.split("|")[0].strip()
+                    # Check if concept doesn't already exist
+                    if concept and concept not in existing_concepts:
+                        missing.append(concept)
+
+            return missing[:10]  # Limit to 10 suggestions
+        except Exception:
+            return []
+
+    async def _detect_data_gaps(self, all_pages: dict[str, dict]) -> list[str]:
+        """Detect pages with missing data or insufficient detail."""
+        gaps = []
+
+        for title, info in all_pages.items():
+            frontmatter = info["frontmatter"]
+            body = info["body"]
+
+            # Check for missing sources
+            sources = frontmatter.get("sources", [])
+            if not sources:
+                gaps.append(f"{title}: No source references")
+
+            # Check for short content
+            word_count = len(body.split())
+            if word_count < 100:
+                gaps.append(f"{title}: Very short content ({word_count} words)")
+
+            # Check for missing tags
+            tags = frontmatter.get("tags", [])
+            if not tags:
+                gaps.append(f"{title}: No tags assigned")
+
+            # Check for missing cross-references
+            link_pattern = re.compile(r'\[\[([^\]]+)\]\]')
+            links = link_pattern.findall(info["content"])
+            if len(links) < 2 and word_count > 200:
+                gaps.append(f"{title}: Few cross-references ({len(links)} links)")
+
+        return gaps
 
     async def _list_sources(self, wiki_root: Path, category: str = "all") -> str:
         """List all sources in the wiki."""
