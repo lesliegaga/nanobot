@@ -318,8 +318,8 @@ class WikiTool(Tool):
         temp_dirs = [Path(tempfile.gettempdir()).resolve()]
         try:
             temp_dirs.append(Path(os.environ.get("TMPDIR", "/tmp")).resolve())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not resolve TMPDIR: {e}")
         
         original_path = Path(source_path)
         has_traversal = ".." in original_path.parts
@@ -328,15 +328,16 @@ class WikiTool(Tool):
             try:
                 if not has_traversal and source_file.is_relative_to(temp_dir):
                     return source_file
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Could not check path against temp dir {temp_dir}: {e}")
                 continue
         
         try:
             project_root = Path(__file__).parent.parent.parent.parent.resolve()
             if not has_traversal and source_file.is_relative_to(project_root):
                 return source_file
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not check project root path: {e}")
 
         raise ValueError(f"Access denied: {source_path}")
 
@@ -443,7 +444,8 @@ class WikiTool(Tool):
                 content = source_file.read_text(encoding="utf-8")
                 if entity_link in content or entity_name in content:
                     count += 1
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to read source file {source_file}: {e}")
                 continue
 
         return count
@@ -1673,7 +1675,8 @@ Be concise."""
                     all_entities.add(title)
                 elif category == "concepts":
                     all_concepts.add(title)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to process page file {page_file}: {e}")
                 continue
 
         # Find links
@@ -1706,11 +1709,19 @@ Be concise."""
                 updated = info["frontmatter"].get("updated", "")
                 if updated:
                     try:
-                        updated_date = datetime.strptime(updated, "%Y-%m-%d")
+                        # Handle both string and datetime objects from YAML
+                        if isinstance(updated, str):
+                            updated_date = datetime.strptime(updated, "%Y-%m-%d")
+                        elif isinstance(updated, datetime):
+                            updated_date = updated
+                        elif hasattr(updated, 'strftime'):  # date object
+                            updated_date = datetime.combine(updated, datetime.min.time())
+                        else:
+                            continue
                         days_old = (datetime.now() - updated_date).days
                         if days_old > self.STALE_THRESHOLD_DAYS:
                             stale.append(f"{title} ({days_old} days)")
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
             if stale:
                 issues.append(f"**Stale pages** (>{self.STALE_THRESHOLD_DAYS} days): {', '.join(stale[:10])}")
@@ -1733,8 +1744,8 @@ Be concise."""
                 contradictions = await self._analyze_contradictions_with_llm(all_pages)
                 if contradictions:
                     issues.append("**Potential contradictions** (LLM analysis):\n- " + "\n- ".join(contradictions))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to analyze contradictions: {e}")
 
         if check_type in ("quality", "all"):
             quality_issues = []
@@ -1745,7 +1756,8 @@ Be concise."""
                         quality_issues.append(f"{title}:")
                         for s in suggestions[:3]:
                             quality_issues.append(f"  - {s}")
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to analyze quality for {title}: {e}")
                     continue
 
             if quality_issues:
@@ -1811,7 +1823,8 @@ Be specific and concise."""
                         missing.append(concept)
 
             return missing[:10]  # Limit to 10 suggestions
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to detect missing concepts: {e}")
             return []
 
     async def _detect_data_gaps(self, all_pages: dict[str, dict]) -> list[str]:
@@ -1911,6 +1924,10 @@ Be specific and concise."""
             return await self._query_wiki(wiki_root, query, category)
 
         if operation == "lint":
-            return await self._lint_wiki(wiki_root, check_type)
+            try:
+                return await self._lint_wiki(wiki_root, check_type)
+            except Exception as e:
+                logger.error(f"Wiki lint failed: {e}")
+                return f"Error: Wiki lint failed - {type(e).__name__}: {e}"
 
         return f"Error: Unknown operation '{operation}'"

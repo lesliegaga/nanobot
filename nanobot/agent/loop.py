@@ -557,21 +557,25 @@ class AgentLoop:
             arg = text[len("/wiki-ingest"):].strip()
             if not arg:
                 return "Usage: /wiki-ingest <source_file_path>"
-            return await wiki_tool.execute(operation="ingest", source_path=arg)
+            wiki_path_str = str(self.wiki_path) if self.wiki_path else None
+            return await wiki_tool.execute(operation="ingest", source_path=arg, wiki_path=wiki_path_str)
 
         if lower.startswith("/wiki-query"):
             arg = text[len("/wiki-query"):].strip()
             if not arg:
                 return "Usage: /wiki-query <question>"
-            return await wiki_tool.execute(operation="query", query=arg)
+            wiki_path_str = str(self.wiki_path) if self.wiki_path else None
+            return await wiki_tool.execute(operation="query", query=arg, wiki_path=wiki_path_str)
 
         if lower.startswith("/wiki-lint"):
             arg = text[len("/wiki-lint"):].strip().lower()
             check_type = arg if arg in ("orphans", "contradictions", "stale", "missing_links", "quality") else "all"
-            return await wiki_tool.execute(operation="lint", check_type=check_type)
+            wiki_path_str = str(self.wiki_path) if self.wiki_path else None
+            return await wiki_tool.execute(operation="lint", check_type=check_type, wiki_path=wiki_path_str)
 
         if lower == "/wiki-sources":
-            return await wiki_tool.execute(operation="list_sources")
+            wiki_path_str = str(self.wiki_path) if self.wiki_path else None
+            return await wiki_tool.execute(operation="list_sources", wiki_path=wiki_path_str)
 
         return (
             "Unknown wiki command. Available:\n"
